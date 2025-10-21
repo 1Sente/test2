@@ -47,7 +47,6 @@ async function createDirectories() {
 
 // Инициализация базы данных
 async function initializeDatabase() {
-    // Сначала создаем директории
     await createDirectories();
     
     return new Promise((resolve, reject) => {
@@ -101,7 +100,7 @@ async function initializeDatabase() {
             });
 
             // Создаем администратора по умолчанию
-            const defaultPassword = 'gta5rpLaMesa_Rayzaki100'; // Смените этот пароль!
+            const defaultPassword = 'admin123'; // СМЕНИТЕ ЭТОТ ПАРОЛЬ!
             bcrypt.hash(defaultPassword, SALT_ROUNDS, (err, hash) => {
                 if (err) {
                     console.error('Ошибка хеширования пароля:', err);
@@ -139,7 +138,119 @@ function requireAuth(req, res, next) {
     }
 }
 
-// HTML страница входа
+// Функция логирования
+async function logRequest(formId, status, message = '') {
+    return new Promise((resolve, reject) => {
+        db.run(
+            `INSERT INTO logs (form_id, status, message) VALUES (?, ?, ?)`,
+            [formId, status, message],
+            function(err) {
+                if (err) {
+                    console.error('Ошибка записи лога:', err);
+                    reject(err);
+                } else {
+                    resolve();
+                }
+            }
+        );
+    });
+}
+
+// Валидация webhook URL
+function isValidWebhookUrl(url) {
+    return url && url.startsWith('https://discord.com/api/webhooks/');
+}
+
+// Функция отправки сообщения в Discord
+async function sendDiscordMessage(formConfig, formData, questions, answers) {
+    // Находим Discord ID в первом ответе
+    let discordId = null;
+    if (answers && answers.length > 0) {
+        const firstAnswer = answers[0];
+        discordId = firstAnswer.text ? firstAnswer.text.trim() : null;
+        
+        // Очищаем Discord ID от лишних символов (оставляем только цифры)
+        if (discordId) {
+            discordId = discordId.replace(/[^0-9]/g, '');
+        }
+    }
+
+    // Формируем упоминание для content (только роль из настроек)
+    let mentionContent = '';
+    if (formConfig.mentions) {
+        const additionalMentions = formConfig.mentions.split(',')
+            .map(id => id.trim())
+            .filter(id => id.length >= 17)
+            .map(id => `<@&${id}>`) // Упоминание роли
+            .join(' ');
+        
+        if (additionalMentions) {
+            mentionContent = additionalMentions;
+        }
+    }
+
+    // Создаем Embed сообщение
+    const embed = {
+        title: formConfig.title || `📋 ${formData.title || formConfig.form_name}`,
+        description: formConfig.description || null,
+        color: parseInt((formConfig.color || '#5865f2').replace('#', ''), 16),
+        fields: [],
+        timestamp: new Date().toISOString(),
+        footer: formConfig.footer ? { text: formConfig.footer } : undefined
+    };
+
+    // Добавляем поля с вопросами и ответами
+    answers.forEach((answer, index) => {
+        const question = questions[index] || { text: `Вопрос ${index + 1}` };
+        if (question && answer.text) {
+            const isDiscordIdField = index === 0;
+            
+            // Для первого поля (Discord ID) добавляем упоминание пользователя в embed
+            if (isDiscordIdField && discordId && discordId.length >= 17) {
+                embed.fields.push({
+                    name: question.text,
+                    value: `<@${discordId}>`, // Упоминание пользователя в embed
+                    inline: false
+                });
+            } else {
+                const fieldValue = answer.text.length > 1024 ? 
+                    answer.text.substring(0, 1020) + '...' : answer.text;
+                
+                embed.fields.push({
+                    name: question.text,
+                    value: fieldValue,
+                    inline: false
+                });
+            }
+        }
+    });
+
+    // Если нет полей, добавляем информационное сообщение
+    if (embed.fields.length === 0) {
+        embed.fields.push({
+            name: '📝 Информация',
+            value: 'Нет данных для отображения',
+            inline: false
+        });
+    }
+
+    // Отправляем в Discord
+    const payload = {
+        embeds: [embed]
+    };
+
+    // Добавляем контент с упоминаниями ролей если есть
+    if (mentionContent) {
+        payload.content = mentionContent;
+    }
+
+    const response = await axios.post(formConfig.webhook_url, payload);
+    return response.data;
+}
+
+let db;
+
+// HTML страница входа (без изменений)
 const LOGIN_HTML = `
 <!DOCTYPE html>
 <html lang="ru">
@@ -248,15 +359,6 @@ const LOGIN_HTML = `
             background: var(--danger); 
             color: white; 
         }
-        
-        .info {
-            margin-top: 1rem;
-            padding: 1rem;
-            background: #2f3136;
-            border-radius: 4px;
-            font-size: 0.8rem;
-            color: #72767d;
-        }
     </style>
 </head>
 <body>
@@ -285,8 +387,6 @@ const LOGIN_HTML = `
                 <i class="fas fa-sign-in-alt"></i> Войти
             </button>
         </form>
-
-
     </div>
 
     <script>
@@ -317,18 +417,12 @@ const LOGIN_HTML = `
                 document.getElementById('alert').textContent = 'Ошибка соединения';
             }
         });
-
-        // Показать alert если есть параметр error в URL
-        const urlParams = new URLSearchParams(window.location.search);
-        if (urlParams.has('error')) {
-            document.getElementById('alert').style.display = 'block';
-        }
     </script>
 </body>
 </html>
 `;
 
-// HTML админка (с исправленными fetch запросами)
+// HTML админки (обновляем текст подсказок)
 const ADMIN_HTML = `
 <!DOCTYPE html>
 <html lang="ru">
@@ -762,7 +856,7 @@ const ADMIN_HTML = `
         <div class="header-bar">
             <div class="header">
                 <h1><i class="fab fa-discord"></i> Яндекс Формы → Discord</h1>
-                <p>Автоматические упоминания по Discord ID из первой строки формы</p>
+                <p>Автоматические упоминания: пользователь в сообщении, роль сверху</p>
             </div>
             <div class="user-info">
                 <span>Вы вошли как: <strong id="username">admin</strong></span>
@@ -785,14 +879,15 @@ const ADMIN_HTML = `
             </div>
             <div class="stat-card">
                 <div class="stat-number"><i class="fas fa-at"></i></div>
-                <div>Авто-упоминания</div>
+                <div>Умные упоминания</div>
             </div>
         </div>
 
         <div class="info-box">
-            <h4><i class="fas fa-info-circle"></i> Важная информация</h4>
-            <p><strong>Первое поле в каждой Яндекс Форме должно быть "Discord ID"!</strong></p>
-            <p>Система автоматически найдет Discord ID в первом поле ответа и упомянет этого пользователя в Discord.</p>
+            <h4><i class="fas fa-info-circle"></i> Новая логика упоминаний</h4>
+            <p><strong>Первый вопрос в форме должен быть "Discord ID"!</strong></p>
+            <p><strong>В сообщении:</strong> пользователь будет упомянут по Discord ID из первого поля</p>
+            <p><strong>Сверху:</strong> будет упомянута роль из настроек (если указана)</p>
         </div>
 
         <div class="tab-container">
@@ -901,8 +996,9 @@ const ADMIN_HTML = `
             <p>Настройте как будут выглядеть сообщения из этой формы в Discord</p>
             
             <div class="info-box">
-                <h4><i class="fas fa-at"></i> Автоматическое упоминание</h4>
-                <p>Система автоматически найдет Discord ID в <strong>первом поле</strong> ответа и упомянет этого пользователя.</p>
+                <h4><i class="fas fa-at"></i> Новая логика упоминаний</h4>
+                <p><strong>В сообщении:</strong> пользователь будет упомянут по Discord ID из первого поля</p>
+                <p><strong>Сверху:</strong> будет упомянута роль указанная ниже</p>
             </div>
             
             <div class="config-section">
@@ -931,17 +1027,17 @@ const ADMIN_HTML = `
             </div>
 
             <div class="config-section">
-                <h3><i class="fas fa-at"></i> Дополнительные упоминания</h3>
+                <h3><i class="fas fa-at"></i> Упоминание роли (сверху)</h3>
                 <p style="margin-bottom: 1rem; font-size: 0.9rem; color: #b9bbbe;">
-                    Укажите дополнительные Discord ID пользователей или ролей для упоминания (через запятую)
+                    Укажите ID роли для упоминания в верхней части сообщения
                 </p>
                 
                 <div class="form-group">
-                    <label for="configMentions">Дополнительные ID для упоминания</label>
-                    <input type="text" id="configMentions" placeholder="123456789012345678, 987654321098765432">
+                    <label for="configMentions">ID роли для упоминания</label>
+                    <input type="text" id="configMentions" placeholder="123456789012345678">
                     <div class="mention-example">
-                        Пример: 123456789012345678, 987654321098765432<br>
-                        Будут добавлены к авто-упоминанию: &lt;@AUTO&gt; &lt;@123456789012345678&gt; &lt;@987654321098765432&gt;
+                        Пример: 123456789012345678<br>
+                        Роль будет упомянута сверху: &lt;@&123456789012345678&gt;
                     </div>
                 </div>
             </div>
@@ -956,7 +1052,7 @@ const ADMIN_HTML = `
                     <div class="title" id="previewTitle">Заголовок сообщения</div>
                     <div class="field">
                         <div class="name">Discord ID</div>
-                        <div>123456789012345678 <span style="color: var(--primary);">👆 Будет упомянут</span></div>
+                        <div>&lt;@123456789012345678&gt; 👆 Упоминание в сообщении</div>
                     </div>
                     <div class="field">
                         <div class="name">Вопрос 2</div>
@@ -1020,7 +1116,7 @@ const ADMIN_HTML = `
                         <h3><i class="fas fa-form"></i> \${form.formName}</h3>
                         <p><strong>ID:</strong> \${form.formId}</p>
                         <p><strong>Webhook:</strong> \${form.webhookPreview}</p>
-                        <p><strong>Доп. упоминания:</strong> \${form.mentionsCount || 0}</p>
+                        <p><strong>Роль для упоминания:</strong> \${form.mentions || 'Не указана'}</p>
                         <div class="form-actions">
                             <button onclick="configureForm('\${form.formId}')" class="btn btn-secondary">
                                 <i class="fas fa-cog"></i> Настроить
@@ -1367,82 +1463,219 @@ const ADMIN_HTML = `
 </html>
 `;
 
-let db;
-
 // Инициализация при запуске
 initializeDatabase().then(database => {
     db = database;
     
-    // Запуск сервера после инициализации БД
-    app.listen(PORT, '0.0.0.0', () => {
-        console.log(`
-✨ 🚀 СЕРВЕР ЯНДЕКС ФОРМЫ → DISCORD С БАЗОЙ ДАННЫХ ЗАПУЩЕН! ✨
+    // Основной вебхук для Яндекс Форм (GET запрос)
+    app.get('/webhook/yandex-form', async (req, res) => {
+        try {
+            console.log('📨 Получен GET запрос от Яндекс Формы');
+            
+            // Логируем все параметры для отладки
+            console.log('Query параметры:', req.query);
+            
+            // Извлекаем данные из GET параметров
+            const { formId, formTitle, answers } = req.query;
+            
+            if (!formId) {
+                await logRequest('UNKNOWN', 'ERROR', 'Отсутствует formId в GET параметрах');
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'Неверный формат данных: отсутствует formId'
+                });
+            }
 
-📍 Порт: ${PORT}
-📊 Админка: http://localhost:${PORT}/admin
-🔐 Логин: admin / admin123
-
-🎉 ОСНОВНЫЕ ВОЗМОЖНОСТИ ВЕРСИИ 4.2:
-✅ АВТОМАТИЧЕСКОЕ УПОМИНАНИЕ по Discord ID из первого поля формы
-🔐 БЕЗОПАСНАЯ АУТЕНТИФИКАЦИЯ с сессиями
-💾 SQLite БАЗА ДАННЫХ для надежного хранения
-📊 СОХРАНЕНИЕ НАСТРОЕК между перезагрузками
-👤 ВОЗМОЖНОСТЬ ВЫХОДА И ПОВТОРНОГО ВХОДА
-🛠️ АВТОСОЗДАНИЕ ДИРЕКТОРИЙ
-🔧 ИСПРАВЛЕНА ОШИБКА 401 UNAUTHORIZED
-
-⚡ СЕРВЕР ГОТОВ К РАБОТЕ!
-
-💡 ВАЖНО: Смените пароль администратора в коде!
-    `);
-    });
-}).catch(err => {
-    console.error('❌ Ошибка инициализации базы данных:', err);
-    process.exit(1);
-});
-
-// Валидация webhook URL
-function isValidWebhookUrl(url) {
-    return url && url.startsWith('https://discord.com/api/webhooks/');
-}
-
-// Функция логирования
-async function logRequest(formId, status, message = '') {
-    return new Promise((resolve, reject) => {
-        db.run(
-            `INSERT INTO logs (form_id, status, message) VALUES (?, ?, ?)`,
-            [formId, status, message],
-            function(err) {
-                if (err) {
-                    console.error('Ошибка записи лога:', err);
-                    reject(err);
-                } else {
-                    resolve();
+            // Парсим answers если они есть
+            let parsedAnswers = [];
+            if (answers) {
+                try {
+                    parsedAnswers = JSON.parse(decodeURIComponent(answers));
+                } catch (e) {
+                    console.error('Ошибка парсинга answers:', e);
+                    // Пробуем альтернативный формат - массив ответов
+                    try {
+                        if (Array.isArray(req.query)) {
+                            parsedAnswers = Object.entries(req.query)
+                                .filter(([key, value]) => key.startsWith('answers['))
+                                .map(([key, value]) => ({
+                                    question_id: key.match(/answers\[(.*?)\]/)?.[1] || key,
+                                    text: value
+                                }));
+                        }
+                    } catch (e2) {
+                        console.error('Альтернативный парсинг тоже не удался:', e2);
+                    }
                 }
             }
-        );
+
+            // Если answers не распарсились, пробуем найти ответы в других параметрах
+            if (parsedAnswers.length === 0) {
+                parsedAnswers = Object.entries(req.query)
+                    .filter(([key, value]) => key !== 'formId' && key !== 'formTitle' && key !== 'answers')
+                    .map(([key, value]) => ({
+                        question_id: key,
+                        text: value
+                    }));
+            }
+
+            console.log('Распарсенные ответы:', parsedAnswers);
+
+            // Ищем конфигурацию формы
+            db.get(
+                `SELECT form_name, webhook_url, title, description, color, footer, mentions 
+                 FROM forms WHERE form_id = ?`,
+                [formId],
+                async (err, formConfig) => {
+                    if (err) {
+                        console.error('Ошибка поиска формы:', err);
+                        await logRequest(formId, 'ERROR', 'Ошибка базы данных');
+                        return res.status(500).json({
+                            status: 'error',
+                            message: 'Внутренняя ошибка сервера'
+                        });
+                    }
+                    
+                    if (!formConfig) {
+                        console.warn(`❌ Не найден вебхук для формы: ${formId}`);
+                        await logRequest(formId, 'NOT_FOUND', 'Форма не зарегистрирована');
+                        return res.status(404).json({
+                            status: 'error',
+                            message: `Вебхук для формы ${formId} не зарегистрирован`
+                        });
+                    }
+
+                    try {
+                        // Создаем структуру данных
+                        const formData = {
+                            id: formId,
+                            title: formTitle || formConfig.form_name
+                        };
+
+                        // Создаем вопросы на основе ответов
+                        const questions = parsedAnswers.map((answer, index) => ({
+                            id: answer.question_id || `q${index + 1}`,
+                            text: `Вопрос ${index + 1}`
+                        }));
+
+                        // Отправляем в Discord
+                        await sendDiscordMessage(formConfig, formData, questions, parsedAnswers);
+
+                        console.log(`✅ Данные формы "${formConfig.form_name}" отправлены в Discord`);
+                        await logRequest(formId, 'SENT', `Данные отправлены в Discord через GET`);
+
+                        res.json({
+                            status: 'success',
+                            message: `Данные отправлены в Discord`,
+                            formName: formConfig.form_name
+                        });
+                    } catch (error) {
+                        console.error('❌ Ошибка отправки в Discord:', error);
+                        await logRequest(formId, 'DISCORD_ERROR', error.message);
+                        res.status(500).json({
+                            status: 'error',
+                            message: 'Ошибка отправки в Discord: ' + error.message
+                        });
+                    }
+                }
+            );
+
+        } catch (error) {
+            console.error('❌ Ошибка обработки GET вебхука:', error);
+            logRequest(req.query.formId || 'UNKNOWN', 'ERROR', error.message);
+            res.status(500).json({
+                status: 'error',
+                message: 'Внутренняя ошибка сервера: ' + error.message
+            });
+        }
     });
-}
 
-// Маршруты аутентификации
+    // Старый POST вебхук для обратной совместимости
+    app.post('/webhook/yandex-form', async (req, res) => {
+        try {
+            console.log('📨 Получен POST запрос от Яндекс Формы');
+            console.log('Body:', req.body);
 
-// Страница входа
-app.get('/admin/login', (req, res) => {
-    if (req.session.authenticated) {
-        res.redirect('/admin');
-    } else {
-        res.send(LOGIN_HTML);
-    }
-});
+            const { form, questions, answers } = req.body;
 
-// Процесс входа
-app.post('/admin/login', (req, res) => {
-    const { username, password } = req.body;
-    
-    db.get(
-        'SELECT * FROM users WHERE username = ?',
-        [username],
-        (err, user) => {
+            if (!form || !form.id) {
+                await logRequest('UNKNOWN', 'ERROR', 'Неверный формат данных в POST');
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'Неверный формат данных'
+                });
+            }
+
+            const formId = form.id;
+            
+            db.get(
+                `SELECT form_name, webhook_url, title, description, color, footer, mentions 
+                 FROM forms WHERE form_id = ?`,
+                [formId],
+                async (err, formConfig) => {
+                    if (err) {
+                        console.error('Ошибка поиска формы:', err);
+                        await logRequest(formId, 'ERROR', 'Ошибка базы данных');
+                        return res.status(500).json({
+                            status: 'error',
+                            message: 'Внутренняя ошибка сервера'
+                        });
+                    }
+                    
+                    if (!formConfig) {
+                        console.warn(`❌ Не найден вебхук для формы: ${formId}`);
+                        await logRequest(formId, 'NOT_FOUND', 'Форма не зарегистрирована');
+                        return res.status(404).json({
+                            status: 'error',
+                            message: `Вебхук для формы ${formId} не зарегистрирован`
+                        });
+                    }
+
+                    try {
+                        await sendDiscordMessage(formConfig, form, questions || [], answers || []);
+
+                        console.log(`✅ Данные формы "${formConfig.form_name}" отправлены в Discord`);
+                        await logRequest(formId, 'SENT', `Данные отправлены в Discord через POST`);
+
+                        res.json({
+                            status: 'success',
+                            message: `Данные отправлены в Discord`,
+                            formName: formConfig.form_name
+                        });
+                    } catch (error) {
+                        console.error('❌ Ошибка отправки в Discord:', error);
+                        await logRequest(formId, 'DISCORD_ERROR', error.message);
+                        res.status(500).json({
+                            status: 'error',
+                            message: 'Ошибка отправки в Discord'
+                        });
+                    }
+                }
+            );
+
+        } catch (error) {
+            console.error('❌ Ошибка обработки POST вебхука:', error);
+            logRequest(req.body.form?.id || 'UNKNOWN', 'ERROR', error.message);
+            res.status(500).json({
+                status: 'error',
+                message: 'Внутренняя ошибка сервера'
+            });
+        }
+    });
+
+    // Маршруты аутентификации
+    app.get('/admin/login', (req, res) => {
+        if (req.session.authenticated) {
+            res.redirect('/admin');
+        } else {
+            res.send(LOGIN_HTML);
+        }
+    });
+
+    app.post('/admin/login', (req, res) => {
+        const { username, password } = req.body;
+        
+        db.get('SELECT * FROM users WHERE username = ?', [username], (err, user) => {
             if (err) {
                 return res.status(500).json({ status: 'error', message: 'Ошибка базы данных' });
             }
@@ -1464,468 +1697,298 @@ app.post('/admin/login', (req, res) => {
                     res.status(401).json({ status: 'error', message: 'Неверный логин или пароль' });
                 }
             });
-        }
-    );
-});
-
-// Выход
-app.post('/admin/logout', (req, res) => {
-    req.session.destroy((err) => {
-        if (err) {
-            console.error('Ошибка выхода:', err);
-        }
-        res.json({ status: 'success', message: 'Выход выполнен' });
-    });
-});
-
-// Главная страница админки (требует аутентификации)
-app.get('/admin', requireAuth, (req, res) => {
-    res.send(ADMIN_HTML);
-});
-
-// API маршруты (все требуют аутентификации)
-
-// Получение списка форм
-app.get('/admin/forms', requireAuth, (req, res) => {
-    db.all(
-        `SELECT form_id as formId, form_name as formName, webhook_url as webhookUrl, 
-                mentions, created_at as createdAt 
-         FROM forms ORDER BY created_at DESC`,
-        (err, rows) => {
-            if (err) {
-                console.error('Ошибка получения форм:', err);
-                return res.status(500).json({ status: 'error', message: 'Ошибка сервера' });
-            }
-            
-            const forms = rows.map(form => ({
-                ...form,
-                webhookPreview: form.webhookUrl ? form.webhookUrl.substring(0, 50) + '...' : 'Не указан',
-                mentionsCount: form.mentions ? form.mentions.split(',').length : 0
-            }));
-
-            res.json({
-                status: 'success',
-                total: forms.length,
-                forms
-            });
-        }
-    );
-});
-
-// Получение конфигурации формы
-app.get('/admin/forms/:formId/config', requireAuth, (req, res) => {
-    const { formId } = req.params;
-    
-    db.get(
-        `SELECT title, description, color, footer, mentions 
-         FROM forms WHERE form_id = ?`,
-        [formId],
-        (err, row) => {
-            if (err) {
-                console.error('Ошибка получения конфигурации:', err);
-                return res.status(500).json({ status: 'error', message: 'Ошибка сервера' });
-            }
-            
-            if (!row) {
-                return res.status(404).json({ status: 'error', message: 'Форма не найдена' });
-            }
-
-            res.json({
-                status: 'success',
-                config: {
-                    title: row.title || '',
-                    description: row.description || '',
-                    color: row.color || '#5865f2',
-                    footer: row.footer || '',
-                    mentions: row.mentions || ''
-                }
-            });
-        }
-    );
-});
-
-// Сохранение конфигурации формы
-app.put('/admin/forms/:formId/config', requireAuth, (req, res) => {
-    const { formId } = req.params;
-    const config = req.body;
-    
-    db.run(
-        `UPDATE forms SET 
-            title = ?, description = ?, color = ?, footer = ?, mentions = ?, updated_at = CURRENT_TIMESTAMP 
-         WHERE form_id = ?`,
-        [config.title, config.description, config.color, config.footer, config.mentions, formId],
-        function(err) {
-            if (err) {
-                console.error('Ошибка сохранения конфигурации:', err);
-                return res.status(500).json({ status: 'error', message: 'Ошибка сервера' });
-            }
-            
-            if (this.changes === 0) {
-                return res.status(404).json({ status: 'error', message: 'Форма не найдена' });
-            }
-
-            logRequest(formId, 'CONFIG_UPDATED', 'Конфигурация обновлена');
-            
-            res.json({
-                status: 'success',
-                message: 'Настройки сохранены'
-            });
-        }
-    );
-});
-
-// Регистрация новой формы
-app.post('/admin/register-form', requireAuth, (req, res) => {
-    const { formId, formName, discordWebhookUrl } = req.body;
-
-    if (!formId || !formName || !discordWebhookUrl) {
-        return res.status(400).json({
-            status: 'error',
-            message: 'formId, formName и discordWebhookUrl обязательны'
         });
-    }
-
-    // Валидация webhook URL
-    if (!isValidWebhookUrl(discordWebhookUrl)) {
-        return res.status(400).json({
-            status: 'error',
-            message: 'Неверный Discord Webhook URL. Должен начинаться с https://discord.com/api/webhooks/'
-        });
-    }
-
-    db.run(
-        `INSERT INTO forms (form_id, form_name, webhook_url) 
-         VALUES (?, ?, ?)`,
-        [formId, formName, discordWebhookUrl],
-        function(err) {
-            if (err) {
-                if (err.message.includes('UNIQUE constraint failed')) {
-                    return res.status(400).json({
-                        status: 'error',
-                        message: `Форма с ID ${formId} уже зарегистрирована`
-                    });
-                }
-                console.error('Ошибка регистрации формы:', err);
-                return res.status(500).json({
-                    status: 'error',
-                    message: 'Внутренняя ошибка сервера'
-                });
-            }
-
-            console.log(`✅ Зарегистрирована форма: ${formId} - ${formName}`);
-            logRequest(formId, 'REGISTERED', `Форма "${formName}" зарегистрирована`);
-
-            res.json({
-                status: 'success',
-                message: `Форма "${formName}" успешно зарегистрирована`,
-                formId: formId
-            });
-        }
-    );
-});
-
-// Удаление формы
-app.delete('/admin/forms/:formId', requireAuth, (req, res) => {
-    const { formId } = req.params;
-    
-    db.get(
-        'SELECT form_name FROM forms WHERE form_id = ?',
-        [formId],
-        (err, row) => {
-            if (err) {
-                console.error('Ошибка поиска формы:', err);
-                return res.status(500).json({ status: 'error', message: 'Ошибка сервера' });
-            }
-            
-            if (!row) {
-                return res.status(404).json({
-                    status: 'error',
-                    message: `Форма ${formId} не найдена`
-                });
-            }
-
-            const formName = row.form_name;
-            
-            db.run(
-                'DELETE FROM forms WHERE form_id = ?',
-                [formId],
-                function(err) {
-                    if (err) {
-                        console.error('Ошибка удаления формы:', err);
-                        return res.status(500).json({ status: 'error', message: 'Ошибка сервера' });
-                    }
-                    
-                    console.log(`🗑️ Удалена форма: ${formId} - ${formName}`);
-                    logRequest(formId, 'DELETED', `Форма "${formName}" удалена`);
-                    
-                    res.json({
-                        status: 'success',
-                        message: `Форма "${formName}" удалена`
-                    });
-                }
-            );
-        }
-    );
-});
-
-// Тестирование вебхука
-app.post('/admin/test-webhook/:formId', requireAuth, (req, res) => {
-    const { formId } = req.params;
-    
-    db.get(
-        `SELECT form_name, webhook_url, title, description, color, footer, mentions 
-         FROM forms WHERE form_id = ?`,
-        [formId],
-        (err, formConfig) => {
-            if (err) {
-                console.error('Ошибка поиска формы:', err);
-                return res.status(500).json({ status: 'error', message: 'Ошибка сервера' });
-            }
-            
-            if (!formConfig) {
-                return res.status(404).json({
-                    status: 'error',
-                    message: `Форма ${formId} не найдена`
-                });
-            }
-
-            // Создаем тестовые данные с Discord ID в первом поле
-            const testData = {
-                form: {
-                    id: formId,
-                    title: formConfig.form_name
-                },
-                questions: [
-                    { id: 'q1', text: 'Ваш Discord ID' },
-                    { id: 'q2', text: 'Ваше имя' },
-                    { id: 'q3', text: 'Сообщение' }
-                ],
-                answers: [
-                    { question_id: 'q1', text: '123456789012345678' }, // Discord ID для теста
-                    { question_id: 'q2', text: 'Тестовый пользователь' },
-                    { question_id: 'q3', text: 'Это тестовое сообщение из панели управления' }
-                ]
-            };
-
-            // Отправляем тестовое сообщение
-            sendDiscordMessage(formConfig, testData.form, testData.questions, testData.answers)
-                .then(() => {
-                    logRequest(formId, 'TEST', 'Тестовое сообщение отправлено');
-                    res.json({
-                        status: 'success',
-                        message: 'Тестовое сообщение отправлено в Discord'
-                    });
-                })
-                .catch(error => {
-                    console.error('Ошибка тестирования вебхука:', error);
-                    logRequest(formId, 'TEST_ERROR', error.message);
-                    res.status(500).json({
-                        status: 'error',
-                        message: 'Ошибка отправки тестового сообщения'
-                    });
-                });
-        }
-    );
-});
-
-// Получение логов
-app.get('/admin/logs', requireAuth, (req, res) => {
-    db.all(
-        `SELECT form_id, status, message, timestamp 
-         FROM logs ORDER BY timestamp DESC LIMIT 100`,
-        (err, rows) => {
-            if (err) {
-                console.error('Ошибка получения логов:', err);
-                return res.status(500).send('Ошибка чтения логов');
-            }
-            
-            const logs = rows.map(log => 
-                `[${log.timestamp}] FORM:${log.form_id || 'SYSTEM'} STATUS:${log.status} ${log.message || ''}`
-            ).join('\n');
-            
-            res.set('Content-Type', 'text/plain');
-            res.send(logs);
-        }
-    );
-});
-
-// Очистка логов
-app.delete('/admin/logs', requireAuth, (req, res) => {
-    db.run('DELETE FROM logs', function(err) {
-        if (err) {
-            console.error('Ошибка очистки логов:', err);
-            return res.status(500).json({ status: 'error', message: 'Ошибка очистки логов' });
-        }
-        
-        logRequest('SYSTEM', 'LOGS_CLEARED', 'Логи очищены через админку');
-        res.json({ status: 'success', message: 'Логи очищены' });
     });
-});
 
-// Основной вебхук от Яндекс Форм (не требует аутентификации)
-app.post('/webhook/yandex-form', async (req, res) => {
-    try {
-        console.log('📨 Получены данные от Яндекс Формы');
+    app.post('/admin/logout', (req, res) => {
+        req.session.destroy((err) => {
+            if (err) {
+                console.error('Ошибка выхода:', err);
+            }
+            res.json({ status: 'success', message: 'Выход выполнен' });
+        });
+    });
 
-        const { form, questions, answers } = req.body;
+    // Главная страница админки
+    app.get('/admin', requireAuth, (req, res) => {
+        res.send(ADMIN_HTML);
+    });
 
-        if (!form || !questions || !answers) {
-            await logRequest('UNKNOWN', 'ERROR', 'Неверный формат данных');
-            return res.status(400).json({
-                status: 'error',
-                message: 'Неверный формат данных'
-            });
-        }
+    // API маршруты для админки
+    app.get('/admin/forms', requireAuth, (req, res) => {
+        db.all(
+            `SELECT form_id as formId, form_name as formName, webhook_url as webhookUrl, 
+                    mentions, created_at as createdAt 
+             FROM forms ORDER BY created_at DESC`,
+            (err, rows) => {
+                if (err) {
+                    console.error('Ошибка получения форм:', err);
+                    return res.status(500).json({ status: 'error', message: 'Ошибка сервера' });
+                }
+                
+                const forms = rows.map(form => ({
+                    ...form,
+                    webhookPreview: form.webhookUrl ? form.webhookUrl.substring(0, 50) + '...' : 'Не указан'
+                }));
 
-        const formId = form.id;
+                res.json({
+                    status: 'success',
+                    total: forms.length,
+                    forms
+                });
+            }
+        );
+    });
+
+    app.get('/admin/forms/:formId/config', requireAuth, (req, res) => {
+        const { formId } = req.params;
         
         db.get(
-            `SELECT form_name, webhook_url, title, description, color, footer, mentions 
+            `SELECT title, description, color, footer, mentions 
              FROM forms WHERE form_id = ?`,
             [formId],
-            async (err, formConfig) => {
+            (err, row) => {
                 if (err) {
-                    console.error('Ошибка поиска формы:', err);
-                    await logRequest(formId, 'ERROR', 'Ошибка базы данных');
+                    console.error('Ошибка получения конфигурации:', err);
+                    return res.status(500).json({ status: 'error', message: 'Ошибка сервера' });
+                }
+                
+                if (!row) {
+                    return res.status(404).json({ status: 'error', message: 'Форма не найдена' });
+                }
+
+                res.json({
+                    status: 'success',
+                    config: {
+                        title: row.title || '',
+                        description: row.description || '',
+                        color: row.color || '#5865f2',
+                        footer: row.footer || '',
+                        mentions: row.mentions || ''
+                    }
+                });
+            }
+        );
+    });
+
+    app.put('/admin/forms/:formId/config', requireAuth, (req, res) => {
+        const { formId } = req.params;
+        const config = req.body;
+        
+        db.run(
+            `UPDATE forms SET 
+                title = ?, description = ?, color = ?, footer = ?, mentions = ?, updated_at = CURRENT_TIMESTAMP 
+             WHERE form_id = ?`,
+            [config.title, config.description, config.color, config.footer, config.mentions, formId],
+            function(err) {
+                if (err) {
+                    console.error('Ошибка сохранения конфигурации:', err);
+                    return res.status(500).json({ status: 'error', message: 'Ошибка сервера' });
+                }
+                
+                if (this.changes === 0) {
+                    return res.status(404).json({ status: 'error', message: 'Форма не найдена' });
+                }
+
+                logRequest(formId, 'CONFIG_UPDATED', 'Конфигурация обновлена');
+                
+                res.json({
+                    status: 'success',
+                    message: 'Настройки сохранены'
+                });
+            }
+        );
+    });
+
+    app.post('/admin/register-form', requireAuth, (req, res) => {
+        const { formId, formName, discordWebhookUrl } = req.body;
+
+        if (!formId || !formName || !discordWebhookUrl) {
+            return res.status(400).json({
+                status: 'error',
+                message: 'formId, formName и discordWebhookUrl обязательны'
+            });
+        }
+
+        if (!isValidWebhookUrl(discordWebhookUrl)) {
+            return res.status(400).json({
+                status: 'error',
+                message: 'Неверный Discord Webhook URL. Должен начинаться с https://discord.com/api/webhooks/'
+            });
+        }
+
+        db.run(
+            `INSERT INTO forms (form_id, form_name, webhook_url) 
+             VALUES (?, ?, ?)`,
+            [formId, formName, discordWebhookUrl],
+            function(err) {
+                if (err) {
+                    if (err.message.includes('UNIQUE constraint failed')) {
+                        return res.status(400).json({
+                            status: 'error',
+                            message: `Форма с ID ${formId} уже зарегистрирована`
+                        });
+                    }
+                    console.error('Ошибка регистрации формы:', err);
                     return res.status(500).json({
                         status: 'error',
                         message: 'Внутренняя ошибка сервера'
                     });
                 }
-                
-                if (!formConfig) {
-                    console.warn(`❌ Не найден вебхук для формы: ${formId}`);
-                    await logRequest(formId, 'NOT_FOUND', 'Форма не зарегистрирована');
-                    return res.status(404).json({
-                        status: 'error',
-                        message: `Вебхук для формы ${formId} не зарегистрирован`
-                    });
-                }
 
-                try {
-                    // Отправляем сообщение в Discord
-                    await sendDiscordMessage(formConfig, form, questions, answers);
+                console.log(`✅ Зарегистрирована форма: ${formId} - ${formName}`);
+                logRequest(formId, 'REGISTERED', `Форма "${formName}" зарегистрирована`);
 
-                    console.log(`✅ Данные формы "${formConfig.form_name}" отправлены в Discord`);
-                    await logRequest(formId, 'SENT', `Данные отправлены в Discord`);
-
-                    res.json({
-                        status: 'success',
-                        message: `Данные отправлены в Discord`,
-                        formName: formConfig.form_name
-                    });
-                } catch (error) {
-                    console.error('❌ Ошибка отправки в Discord:', error);
-                    await logRequest(formId, 'DISCORD_ERROR', error.message);
-                    res.status(500).json({
-                        status: 'error',
-                        message: 'Ошибка отправки в Discord'
-                    });
-                }
+                res.json({
+                    status: 'success',
+                    message: `Форма "${formName}" успешно зарегистрирована`,
+                    formId: formId
+                });
             }
         );
+    });
 
-    } catch (error) {
-        console.error('❌ Ошибка обработки вебхука:', error);
-        logRequest(req.body.form?.id || 'UNKNOWN', 'ERROR', error.message);
-        res.status(500).json({
-            status: 'error',
-            message: 'Внутренняя ошибка сервера'
-        });
-    }
-});
-
-// Функция отправки сообщения в Discord
-async function sendDiscordMessage(formConfig, form, questions, answers) {
-    // Находим Discord ID в первом ответе
-    let discordId = null;
-    if (answers && answers.length > 0) {
-        const firstAnswer = answers[0];
-        discordId = firstAnswer.text ? firstAnswer.text.trim() : null;
+    app.delete('/admin/forms/:formId', requireAuth, (req, res) => {
+        const { formId } = req.params;
         
-        // Очищаем Discord ID от лишних символов (оставляем только цифры)
-        if (discordId) {
-            discordId = discordId.replace(/[^0-9]/g, '');
-        }
-    }
-
-    // Формируем упоминание
-    let mentionContent = '';
-    if (discordId && discordId.length >= 17) { // Discord ID обычно 17-19 цифр
-        mentionContent = `<@${discordId}>`;
-    }
-
-    // Добавляем дополнительные упоминания если есть
-    if (formConfig.mentions) {
-        const additionalMentions = formConfig.mentions.split(',')
-            .map(id => id.trim())
-            .filter(id => id.length >= 17)
-            .map(id => `<@${id}>`)
-            .join(' ');
-        
-        if (additionalMentions) {
-            mentionContent = mentionContent ? `${mentionContent} ${additionalMentions}` : additionalMentions;
-        }
-    }
-
-    // Создаем Embed сообщение
-    const embed = {
-        title: formConfig.title || `📋 ${form.title || formConfig.form_name}`,
-        description: formConfig.description || null,
-        color: parseInt((formConfig.color || '#5865f2').replace('#', ''), 16),
-        fields: [],
-        timestamp: new Date().toISOString(),
-        footer: formConfig.footer ? { text: formConfig.footer } : undefined
-    };
-
-    // Добавляем поля с вопросами и ответами (пропускаем первый ответ если это Discord ID)
-    answers.forEach((answer, index) => {
-        const question = questions.find(q => q.id === answer.question_id);
-        if (question && answer.text) {
-            // Первое поле (Discord ID) помечаем специально
-            const isDiscordIdField = index === 0;
-            const fieldValue = isDiscordIdField ? 
-                `${answer.text} 👆 (будет упомянут)` : 
-                (answer.text.length > 1024 ? answer.text.substring(0, 1020) + '...' : answer.text);
+        db.get('SELECT form_name FROM forms WHERE form_id = ?', [formId], (err, row) => {
+            if (err) {
+                console.error('Ошибка поиска формы:', err);
+                return res.status(500).json({ status: 'error', message: 'Ошибка сервера' });
+            }
             
-            embed.fields.push({
-                name: question.text,
-                value: fieldValue,
-                inline: false
+            if (!row) {
+                return res.status(404).json({ status: 'error', message: `Форма ${formId} не найдена` });
+            }
+
+            const formName = row.form_name;
+            
+            db.run('DELETE FROM forms WHERE form_id = ?', [formId], function(err) {
+                if (err) {
+                    console.error('Ошибка удаления формы:', err);
+                    return res.status(500).json({ status: 'error', message: 'Ошибка сервера' });
+                }
+                
+                console.log(`🗑️ Удалена форма: ${formId} - ${formName}`);
+                logRequest(formId, 'DELETED', `Форма "${formName}" удалена`);
+                
+                res.json({ status: 'success', message: `Форма "${formName}" удалена` });
             });
-        }
-    });
-
-    // Если нет полей, добавляем информационное сообщение
-    if (embed.fields.length === 0) {
-        embed.fields.push({
-            name: '📝 Информация',
-            value: 'Нет данных для отображения',
-            inline: false
         });
-    }
-
-    // Отправляем в Discord
-    const payload = {
-        embeds: [embed]
-    };
-
-    // Добавляем контент с упоминаниями если есть
-    if (mentionContent) {
-        payload.content = mentionContent;
-    }
-
-    const response = await axios.post(formConfig.webhook_url, payload);
-    return response.data;
-}
-
-// Health check
-app.get('/health', (req, res) => {
-    res.json({ 
-        status: 'healthy', 
-        timestamp: new Date().toISOString(),
-        version: '4.2'
     });
+
+    app.post('/admin/test-webhook/:formId', requireAuth, (req, res) => {
+        const { formId } = req.params;
+        
+        db.get(
+            `SELECT form_name, webhook_url, title, description, color, footer, mentions 
+             FROM forms WHERE form_id = ?`,
+            [formId],
+            (err, formConfig) => {
+                if (err) {
+                    console.error('Ошибка поиска формы:', err);
+                    return res.status(500).json({ status: 'error', message: 'Ошибка сервера' });
+                }
+                
+                if (!formConfig) {
+                    return res.status(404).json({ status: 'error', message: `Форма ${formId} не найдена` });
+                }
+
+                // Создаем тестовые данные
+                const testData = {
+                    form: { id: formId, title: formConfig.form_name },
+                    questions: [
+                        { id: 'q1', text: 'Ваш Discord ID' },
+                        { id: 'q2', text: 'Ваше имя' },
+                        { id: 'q3', text: 'Сообщение' }
+                    ],
+                    answers: [
+                        { question_id: 'q1', text: '123456789012345678' },
+                        { question_id: 'q2', text: 'Тестовый пользователь' },
+                        { question_id: 'q3', text: 'Это тестовое сообщение из панели управления' }
+                    ]
+                };
+
+                sendDiscordMessage(formConfig, testData.form, testData.questions, testData.answers)
+                    .then(() => {
+                        logRequest(formId, 'TEST', 'Тестовое сообщение отправлено');
+                        res.json({ status: 'success', message: 'Тестовое сообщение отправлено в Discord' });
+                    })
+                    .catch(error => {
+                        console.error('Ошибка тестирования вебхука:', error);
+                        logRequest(formId, 'TEST_ERROR', error.message);
+                        res.status(500).json({ status: 'error', message: 'Ошибка отправки тестового сообщения' });
+                    });
+            }
+        );
+    });
+
+    app.get('/admin/logs', requireAuth, (req, res) => {
+        db.all(
+            `SELECT form_id, status, message, timestamp 
+             FROM logs ORDER BY timestamp DESC LIMIT 100`,
+            (err, rows) => {
+                if (err) {
+                    console.error('Ошибка получения логов:', err);
+                    return res.status(500).send('Ошибка чтения логов');
+                }
+                
+                const logs = rows.map(log => 
+                    `[${log.timestamp}] FORM:${log.form_id || 'SYSTEM'} STATUS:${log.status} ${log.message || ''}`
+                ).join('\n');
+                
+                res.set('Content-Type', 'text/plain');
+                res.send(logs);
+            }
+        );
+    });
+
+    app.delete('/admin/logs', requireAuth, (req, res) => {
+        db.run('DELETE FROM logs', function(err) {
+            if (err) {
+                console.error('Ошибка очистки логов:', err);
+                return res.status(500).json({ status: 'error', message: 'Ошибка очистки логов' });
+            }
+            
+            logRequest('SYSTEM', 'LOGS_CLEARED', 'Логи очищены через админку');
+            res.json({ status: 'success', message: 'Логи очищены' });
+        });
+    });
+
+    // Health check
+    app.get('/health', (req, res) => {
+        res.json({ 
+            status: 'healthy', 
+            timestamp: new Date().toISOString(),
+            version: '4.4',
+            note: 'Умные упоминания: пользователь в сообщении, роль сверху'
+        });
+    });
+
+    // Запуск сервера
+    app.listen(PORT, '0.0.0.0', () => {
+        console.log(`
+✨ 🚀 СЕРВЕР ЯНДЕКС ФОРМЫ → DISCORD ЗАПУЩЕН! ✨
+
+📍 Порт: ${PORT}
+📊 Админка: http://localhost:${PORT}/admin
+🌐 Доступ извне: http://95.164.93.95:${PORT}/admin
+🔐 Логин: admin / admin123
+
+🎉 ОСНОВНЫЕ ВОЗМОЖНОСТИ ВЕРСИИ 4.4:
+✅ УМНЫЕ УПОМИНАНИЯ: пользователь в сообщении, роль сверху
+✅ ПОДДЕРЖКА GET ЗАПРОСОВ от нового интерфейса Яндекс Форм
+✅ АВТОМАТИЧЕСКОЕ УПОМИНАНИЕ по Discord ID из первого поля
+🔐 БЕЗОПАСНАЯ АУТЕНТИФИКАЦИЯ
+
+⚡ СЕРВЕР ГОТОВ К РАБОТЕ!
+
+💡 ВАЖНО: Смените пароль администратора в коде!
+        `);
+    });
+}).catch(err => {
+    console.error('❌ Ошибка инициализации базы данных:', err);
+    process.exit(1);
 });
 
 // Обработка graceful shutdown
