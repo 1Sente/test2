@@ -12,8 +12,9 @@ const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(express.raw({ type: '*/*', limit: '10mb' }));
 app.use(express.static('public'));
-app.use(express.urlencoded({ extended: true }));
 
 // Сессии
 app.use(session({
@@ -100,7 +101,7 @@ async function initializeDatabase() {
             });
 
             // Создаем администратора по умолчанию
-            const defaultPassword = 'admin123'; // СМЕНИТЕ ЭТОТ ПАРОЛЬ!
+            const defaultPassword = 'gta5rpLaMesa_Rayzaki100'; // СМЕНИТЕ ЭТОТ ПАРОЛЬ!
             bcrypt.hash(defaultPassword, SALT_ROUNDS, (err, hash) => {
                 if (err) {
                     console.error('Ошибка хеширования пароля:', err);
@@ -248,7 +249,389 @@ async function sendDiscordMessage(formConfig, formData, questions, answers) {
     return response.data;
 }
 
+// Функция для парсинга ответов из разных форматов Яндекс Форм
+function parseYandexFormAnswers(answersData) {
+    try {
+        // Если answersData уже массив, возвращаем как есть
+        if (Array.isArray(answersData)) {
+            return answersData;
+        }
+
+        // Если это строка, пробуем распарсить JSON
+        if (typeof answersData === 'string') {
+            const parsed = JSON.parse(answersData);
+            return parseYandexFormAnswers(parsed);
+        }
+
+        // Если это объект с данными Яндекс Форм (новый формат)
+        if (answersData && answersData.answer && answersData.answer.data) {
+            const answers = [];
+            const data = answersData.answer.data;
+            
+            Object.keys(data).forEach(key => {
+                const field = data[key];
+                if (field && field.value !== undefined) {
+                    let answerText = field.value;
+                    
+                    // Обработка разных типов ответов
+                    if (Array.isArray(answerText)) {
+                        answerText = answerText.map(item => item.text || item).join(', ');
+                    } else if (typeof answerText === 'object') {
+                        answerText = JSON.stringify(answerText);
+                    }
+                    
+                    answers.push({
+                        question_id: key,
+                        text: String(answerText)
+                    });
+                }
+            });
+            
+            return answers;
+        }
+
+        // Если это объект со старой структурой
+        if (answersData && typeof answersData === 'object') {
+            const answers = [];
+            Object.keys(answersData).forEach(key => {
+                if (key !== 'formId' && key !== 'formTitle') {
+                    answers.push({
+                        question_id: key,
+                        text: String(answersData[key])
+                    });
+                }
+            });
+            return answers;
+        }
+
+        return [];
+    } catch (error) {
+        console.error('Ошибка парсинга ответов:', error);
+        return [];
+    }
+}
+
 let db;
+
+// Основной вебхук для Яндекс Форм (GET запрос)
+app.get('/webhook/yandex-form', async (req, res) => {
+    try {
+        console.log('📨 Получен GET запрос от Яндекс Формы');
+        
+        // Логируем все параметры для отладки
+        console.log('Query параметры:', req.query);
+        
+        // Извлекаем данные из GET параметров
+        const { formId, formTitle, answers } = req.query;
+        
+        if (!formId) {
+            await logRequest('UNKNOWN', 'ERROR', 'Отсутствует formId в GET параметрах');
+            return res.status(400).json({
+                status: 'error',
+                message: 'Неверный формат данных: отсутствует formId'
+            });
+        }
+
+        // Парсим answers если они есть
+        let parsedAnswers = parseYandexFormAnswers(answers);
+
+        // Если answers не распарсились, пробуем найти ответы в других параметрах
+        if (parsedAnswers.length === 0) {
+            parsedAnswers = Object.entries(req.query)
+                .filter(([key, value]) => key !== 'formId' && key !== 'formTitle' && key !== 'answers')
+                .map(([key, value]) => ({
+                    question_id: key,
+                    text: String(value)
+                }));
+        }
+
+        console.log('Распарсенные ответы:', parsedAnswers);
+
+        // Ищем конфигурацию формы
+        db.get(
+            `SELECT form_name, webhook_url, title, description, color, footer, mentions 
+             FROM forms WHERE form_id = ?`,
+            [formId],
+            async (err, formConfig) => {
+                if (err) {
+                    console.error('Ошибка поиска формы:', err);
+                    await logRequest(formId, 'ERROR', 'Ошибка базы данных');
+                    return res.status(500).json({
+                        status: 'error',
+                        message: 'Внутренняя ошибка сервера'
+                    });
+                }
+                
+                if (!formConfig) {
+                    console.warn(`❌ Не найден вебхук для формы: ${formId}`);
+                    await logRequest(formId, 'NOT_FOUND', 'Форма не зарегистрирована');
+                    return res.status(404).json({
+                        status: 'error',
+                        message: `Вебхук для формы ${formId} не зарегистрирован`
+                    });
+                }
+
+                try {
+                    // Создаем структуру данных
+                    const formData = {
+                        id: formId,
+                        title: formTitle || formConfig.form_name
+                    };
+
+                    // Создаем вопросы на основе ответов
+                    const questions = parsedAnswers.map((answer, index) => ({
+                        id: answer.question_id || `q${index + 1}`,
+                        text: `Вопрос ${index + 1}`
+                    }));
+
+                    // Отправляем в Discord
+                    await sendDiscordMessage(formConfig, formData, questions, parsedAnswers);
+
+                    console.log(`✅ Данные формы "${formConfig.form_name}" отправлены в Discord`);
+                    await logRequest(formId, 'SENT', `Данные отправлены в Discord через GET`);
+
+                    res.json({
+                        status: 'success',
+                        message: `Данные отправлены в Discord`,
+                        formName: formConfig.form_name
+                    });
+                } catch (error) {
+                    console.error('❌ Ошибка отправки в Discord:', error);
+                    await logRequest(formId, 'DISCORD_ERROR', error.message);
+                    res.status(500).json({
+                        status: 'error',
+                        message: 'Ошибка отправки в Discord: ' + error.message
+                    });
+                }
+            }
+        );
+
+    } catch (error) {
+        console.error('❌ Ошибка обработки GET вебхука:', error);
+        logRequest(req.query.formId || 'UNKNOWN', 'ERROR', error.message);
+        res.status(500).json({
+            status: 'error',
+            message: 'Внутренняя ошибка сервера: ' + error.message
+        });
+    }
+});
+
+// POST вебхук с поддержкой JSON-RPC и обычного JSON
+app.post('/webhook/yandex-form', async (req, res) => {
+    try {
+        console.log('📨 Получен POST запрос от Яндекс Формы');
+        console.log('Content-Type:', req.headers['content-type']);
+        
+        let requestBody = req.body;
+        
+        // Пробуем распарсить тело запроса если оно пришло как Buffer или строка
+        if (Buffer.isBuffer(requestBody)) {
+            requestBody = requestBody.toString('utf8');
+        }
+        
+        if (typeof requestBody === 'string') {
+            try {
+                requestBody = JSON.parse(requestBody);
+            } catch (e) {
+                console.log('Тело запроса не JSON, используем как есть');
+            }
+        }
+        
+        console.log('Parsed Body:', requestBody);
+
+        let formId, formTitle, answers, questions;
+
+        // Обработка JSON-RPC запроса
+        if (requestBody && requestBody.jsonrpc === '2.0') {
+            console.log('🔧 Обработка JSON-RPC запроса');
+            
+            const { method, params, id } = requestBody;
+            
+            formId = params.formId;
+            formTitle = params.formTitle;
+            
+            // Парсим answers из JSON-RPC
+            if (params.answers) {
+                if (typeof params.answers === 'string') {
+                    try {
+                        const answersData = JSON.parse(params.answers);
+                        answers = parseYandexFormAnswers(answersData);
+                    } catch (e) {
+                        console.error('Ошибка парсинга answers в JSON-RPC:', e);
+                        answers = [];
+                    }
+                } else {
+                    answers = parseYandexFormAnswers(params.answers);
+                }
+            } else {
+                answers = [];
+            }
+
+            // Создаем вопросы
+            questions = answers.map((answer, index) => ({
+                id: answer.question_id || `q${index + 1}`,
+                text: `Вопрос ${index + 1}`
+            }));
+
+            // Ищем конфигурацию формы
+            db.get(
+                `SELECT form_name, webhook_url, title, description, color, footer, mentions 
+                 FROM forms WHERE form_id = ?`,
+                [formId],
+                async (err, formConfig) => {
+                    if (err) {
+                        console.error('Ошибка поиска формы:', err);
+                        await logRequest(formId, 'ERROR', 'Ошибка базы данных');
+                        return res.json({
+                            jsonrpc: '2.0',
+                            error: { code: -32603, message: 'Internal error' },
+                            id: id
+                        });
+                    }
+                    
+                    if (!formConfig) {
+                        console.warn(`❌ Не найден вебхук для формы: ${formId}`);
+                        await logRequest(formId, 'NOT_FOUND', 'Форма не зарегистрирована');
+                        return res.json({
+                            jsonrpc: '2.0',
+                            error: { code: -32601, message: `Вебхук для формы ${formId} не зарегистрирован` },
+                            id: id
+                        });
+                    }
+
+                    try {
+                        const formData = {
+                            id: formId,
+                            title: formTitle || formConfig.form_name
+                        };
+
+                        await sendDiscordMessage(formConfig, formData, questions, answers);
+
+                        console.log(`✅ Данные формы "${formConfig.form_name}" отправлены в Discord через JSON-RPC`);
+                        await logRequest(formId, 'SENT', `Данные отправлены в Discord через JSON-RPC`);
+
+                        res.json({
+                            jsonrpc: '2.0',
+                            result: { 
+                                status: 'success',
+                                message: `Данные отправлены в Discord`,
+                                formName: formConfig.form_name
+                            },
+                            id: id
+                        });
+                    } catch (error) {
+                        console.error('❌ Ошибка отправки в Discord:', error);
+                        await logRequest(formId, 'DISCORD_ERROR', error.message);
+                        res.json({
+                            jsonrpc: '2.0',
+                            error: { code: -32000, message: 'Ошибка отправки в Discord: ' + error.message },
+                            id: id
+                        });
+                    }
+                }
+            );
+            return;
+        }
+
+        // Обработка обычного POST запроса (для обратной совместимости)
+        if (requestBody && requestBody.form && requestBody.form.id) {
+            console.log('🔧 Обработка обычного POST запроса');
+            
+            formId = requestBody.form.id;
+            formTitle = requestBody.form.title;
+            answers = requestBody.answers || [];
+            questions = requestBody.questions || [];
+        } else {
+            // Пробуем извлечь данные из тела запроса другими способами
+            formId = requestBody.formId || requestBody.form_id;
+            formTitle = requestBody.formTitle || requestBody.form_title;
+            
+            if (requestBody.answers) {
+                answers = parseYandexFormAnswers(requestBody.answers);
+            } else {
+                // Извлекаем ответы из других полей
+                answers = Object.entries(requestBody)
+                    .filter(([key, value]) => !['formId', 'form_id', 'formTitle', 'form_title', 'answers'].includes(key))
+                    .map(([key, value]) => ({
+                        question_id: key,
+                        text: String(value)
+                    }));
+            }
+            
+            questions = answers.map((answer, index) => ({
+                id: answer.question_id || `q${index + 1}`,
+                text: `Вопрос ${index + 1}`
+            }));
+        }
+
+        if (!formId) {
+            await logRequest('UNKNOWN', 'ERROR', 'Неверный формат данных в POST');
+            return res.status(400).json({
+                status: 'error',
+                message: 'Неверный формат данных: отсутствует formId'
+            });
+        }
+
+        // Ищем конфигурацию формы
+        db.get(
+            `SELECT form_name, webhook_url, title, description, color, footer, mentions 
+             FROM forms WHERE form_id = ?`,
+            [formId],
+            async (err, formConfig) => {
+                if (err) {
+                    console.error('Ошибка поиска формы:', err);
+                    await logRequest(formId, 'ERROR', 'Ошибка базы данных');
+                    return res.status(500).json({
+                        status: 'error',
+                        message: 'Внутренняя ошибка сервера'
+                    });
+                }
+                
+                if (!formConfig) {
+                    console.warn(`❌ Не найден вебхук для формы: ${formId}`);
+                    await logRequest(formId, 'NOT_FOUND', 'Форма не зарегистрирована');
+                    return res.status(404).json({
+                        status: 'error',
+                        message: `Вебхук для формы ${formId} не зарегистрирован`
+                    });
+                }
+
+                try {
+                    const formData = {
+                        id: formId,
+                        title: formTitle || formConfig.form_name
+                    };
+
+                    await sendDiscordMessage(formConfig, formData, questions, answers);
+
+                    console.log(`✅ Данные формы "${formConfig.form_name}" отправлены в Discord`);
+                    await logRequest(formId, 'SENT', `Данные отправлены в Discord через POST`);
+
+                    res.json({
+                        status: 'success',
+                        message: `Данные отправлены в Discord`,
+                        formName: formConfig.form_name
+                    });
+                } catch (error) {
+                    console.error('❌ Ошибка отправки в Discord:', error);
+                    await logRequest(formId, 'DISCORD_ERROR', error.message);
+                    res.status(500).json({
+                        status: 'error',
+                        message: 'Ошибка отправки в Discord'
+                    });
+                }
+            }
+        );
+
+    } catch (error) {
+        console.error('❌ Ошибка обработки POST вебхука:', error);
+        logRequest('UNKNOWN', 'ERROR', error.message);
+        res.status(500).json({
+            status: 'error',
+            message: 'Внутренняя ошибка сервера'
+        });
+    }
+});
 
 // HTML страница входа (без изменений)
 const LOGIN_HTML = `
@@ -422,7 +805,7 @@ const LOGIN_HTML = `
 </html>
 `;
 
-// HTML админки (обновляем текст подсказок)
+// HTML админки (без изменений)
 const ADMIN_HTML = `
 <!DOCTYPE html>
 <html lang="ru">
@@ -1463,508 +1846,312 @@ const ADMIN_HTML = `
 </html>
 `;
 
-// Инициализация при запуске
-initializeDatabase().then(database => {
-    db = database;
+// Маршруты аутентификации
+app.get('/admin/login', (req, res) => {
+    if (req.session.authenticated) {
+        res.redirect('/admin');
+    } else {
+        res.send(LOGIN_HTML);
+    }
+});
+
+app.post('/admin/login', (req, res) => {
+    const { username, password } = req.body;
     
-    // Основной вебхук для Яндекс Форм (GET запрос)
-    app.get('/webhook/yandex-form', async (req, res) => {
-        try {
-            console.log('📨 Получен GET запрос от Яндекс Формы');
-            
-            // Логируем все параметры для отладки
-            console.log('Query параметры:', req.query);
-            
-            // Извлекаем данные из GET параметров
-            const { formId, formTitle, answers } = req.query;
-            
-            if (!formId) {
-                await logRequest('UNKNOWN', 'ERROR', 'Отсутствует formId в GET параметрах');
-                return res.status(400).json({
-                    status: 'error',
-                    message: 'Неверный формат данных: отсутствует formId'
-                });
-            }
-
-            // Парсим answers если они есть
-            let parsedAnswers = [];
-            if (answers) {
-                try {
-                    parsedAnswers = JSON.parse(decodeURIComponent(answers));
-                } catch (e) {
-                    console.error('Ошибка парсинга answers:', e);
-                    // Пробуем альтернативный формат - массив ответов
-                    try {
-                        if (Array.isArray(req.query)) {
-                            parsedAnswers = Object.entries(req.query)
-                                .filter(([key, value]) => key.startsWith('answers['))
-                                .map(([key, value]) => ({
-                                    question_id: key.match(/answers\[(.*?)\]/)?.[1] || key,
-                                    text: value
-                                }));
-                        }
-                    } catch (e2) {
-                        console.error('Альтернативный парсинг тоже не удался:', e2);
-                    }
-                }
-            }
-
-            // Если answers не распарсились, пробуем найти ответы в других параметрах
-            if (parsedAnswers.length === 0) {
-                parsedAnswers = Object.entries(req.query)
-                    .filter(([key, value]) => key !== 'formId' && key !== 'formTitle' && key !== 'answers')
-                    .map(([key, value]) => ({
-                        question_id: key,
-                        text: value
-                    }));
-            }
-
-            console.log('Распарсенные ответы:', parsedAnswers);
-
-            // Ищем конфигурацию формы
-            db.get(
-                `SELECT form_name, webhook_url, title, description, color, footer, mentions 
-                 FROM forms WHERE form_id = ?`,
-                [formId],
-                async (err, formConfig) => {
-                    if (err) {
-                        console.error('Ошибка поиска формы:', err);
-                        await logRequest(formId, 'ERROR', 'Ошибка базы данных');
-                        return res.status(500).json({
-                            status: 'error',
-                            message: 'Внутренняя ошибка сервера'
-                        });
-                    }
-                    
-                    if (!formConfig) {
-                        console.warn(`❌ Не найден вебхук для формы: ${formId}`);
-                        await logRequest(formId, 'NOT_FOUND', 'Форма не зарегистрирована');
-                        return res.status(404).json({
-                            status: 'error',
-                            message: `Вебхук для формы ${formId} не зарегистрирован`
-                        });
-                    }
-
-                    try {
-                        // Создаем структуру данных
-                        const formData = {
-                            id: formId,
-                            title: formTitle || formConfig.form_name
-                        };
-
-                        // Создаем вопросы на основе ответов
-                        const questions = parsedAnswers.map((answer, index) => ({
-                            id: answer.question_id || `q${index + 1}`,
-                            text: `Вопрос ${index + 1}`
-                        }));
-
-                        // Отправляем в Discord
-                        await sendDiscordMessage(formConfig, formData, questions, parsedAnswers);
-
-                        console.log(`✅ Данные формы "${formConfig.form_name}" отправлены в Discord`);
-                        await logRequest(formId, 'SENT', `Данные отправлены в Discord через GET`);
-
-                        res.json({
-                            status: 'success',
-                            message: `Данные отправлены в Discord`,
-                            formName: formConfig.form_name
-                        });
-                    } catch (error) {
-                        console.error('❌ Ошибка отправки в Discord:', error);
-                        await logRequest(formId, 'DISCORD_ERROR', error.message);
-                        res.status(500).json({
-                            status: 'error',
-                            message: 'Ошибка отправки в Discord: ' + error.message
-                        });
-                    }
-                }
-            );
-
-        } catch (error) {
-            console.error('❌ Ошибка обработки GET вебхука:', error);
-            logRequest(req.query.formId || 'UNKNOWN', 'ERROR', error.message);
-            res.status(500).json({
-                status: 'error',
-                message: 'Внутренняя ошибка сервера: ' + error.message
-            });
+    db.get('SELECT * FROM users WHERE username = ?', [username], (err, user) => {
+        if (err) {
+            return res.status(500).json({ status: 'error', message: 'Ошибка базы данных' });
         }
-    });
-
-    // Старый POST вебхук для обратной совместимости
-    app.post('/webhook/yandex-form', async (req, res) => {
-        try {
-            console.log('📨 Получен POST запрос от Яндекс Формы');
-            console.log('Body:', req.body);
-
-            const { form, questions, answers } = req.body;
-
-            if (!form || !form.id) {
-                await logRequest('UNKNOWN', 'ERROR', 'Неверный формат данных в POST');
-                return res.status(400).json({
-                    status: 'error',
-                    message: 'Неверный формат данных'
-                });
-            }
-
-            const formId = form.id;
-            
-            db.get(
-                `SELECT form_name, webhook_url, title, description, color, footer, mentions 
-                 FROM forms WHERE form_id = ?`,
-                [formId],
-                async (err, formConfig) => {
-                    if (err) {
-                        console.error('Ошибка поиска формы:', err);
-                        await logRequest(formId, 'ERROR', 'Ошибка базы данных');
-                        return res.status(500).json({
-                            status: 'error',
-                            message: 'Внутренняя ошибка сервера'
-                        });
-                    }
-                    
-                    if (!formConfig) {
-                        console.warn(`❌ Не найден вебхук для формы: ${formId}`);
-                        await logRequest(formId, 'NOT_FOUND', 'Форма не зарегистрирована');
-                        return res.status(404).json({
-                            status: 'error',
-                            message: `Вебхук для формы ${formId} не зарегистрирован`
-                        });
-                    }
-
-                    try {
-                        await sendDiscordMessage(formConfig, form, questions || [], answers || []);
-
-                        console.log(`✅ Данные формы "${formConfig.form_name}" отправлены в Discord`);
-                        await logRequest(formId, 'SENT', `Данные отправлены в Discord через POST`);
-
-                        res.json({
-                            status: 'success',
-                            message: `Данные отправлены в Discord`,
-                            formName: formConfig.form_name
-                        });
-                    } catch (error) {
-                        console.error('❌ Ошибка отправки в Discord:', error);
-                        await logRequest(formId, 'DISCORD_ERROR', error.message);
-                        res.status(500).json({
-                            status: 'error',
-                            message: 'Ошибка отправки в Discord'
-                        });
-                    }
-                }
-            );
-
-        } catch (error) {
-            console.error('❌ Ошибка обработки POST вебхука:', error);
-            logRequest(req.body.form?.id || 'UNKNOWN', 'ERROR', error.message);
-            res.status(500).json({
-                status: 'error',
-                message: 'Внутренняя ошибка сервера'
-            });
-        }
-    });
-
-    // Маршруты аутентификации
-    app.get('/admin/login', (req, res) => {
-        if (req.session.authenticated) {
-            res.redirect('/admin');
-        } else {
-            res.send(LOGIN_HTML);
-        }
-    });
-
-    app.post('/admin/login', (req, res) => {
-        const { username, password } = req.body;
         
-        db.get('SELECT * FROM users WHERE username = ?', [username], (err, user) => {
+        if (!user) {
+            return res.status(401).json({ status: 'error', message: 'Неверный логин или пароль' });
+        }
+        
+        bcrypt.compare(password, user.password_hash, (err, result) => {
             if (err) {
-                return res.status(500).json({ status: 'error', message: 'Ошибка базы данных' });
+                return res.status(500).json({ status: 'error', message: 'Ошибка проверки пароля' });
             }
             
-            if (!user) {
-                return res.status(401).json({ status: 'error', message: 'Неверный логин или пароль' });
+            if (result) {
+                req.session.authenticated = true;
+                req.session.username = username;
+                res.json({ status: 'success', message: 'Вход выполнен' });
+            } else {
+                res.status(401).json({ status: 'error', message: 'Неверный логин или пароль' });
             }
-            
-            bcrypt.compare(password, user.password_hash, (err, result) => {
-                if (err) {
-                    return res.status(500).json({ status: 'error', message: 'Ошибка проверки пароля' });
-                }
-                
-                if (result) {
-                    req.session.authenticated = true;
-                    req.session.username = username;
-                    res.json({ status: 'success', message: 'Вход выполнен' });
-                } else {
-                    res.status(401).json({ status: 'error', message: 'Неверный логин или пароль' });
-                }
-            });
         });
     });
+});
 
-    app.post('/admin/logout', (req, res) => {
-        req.session.destroy((err) => {
+app.post('/admin/logout', (req, res) => {
+    req.session.destroy((err) => {
+        if (err) {
+            console.error('Ошибка выхода:', err);
+        }
+        res.json({ status: 'success', message: 'Выход выполнен' });
+    });
+});
+
+// Главная страница админки
+app.get('/admin', requireAuth, (req, res) => {
+    res.send(ADMIN_HTML);
+});
+
+// API маршруты для админки
+app.get('/admin/forms', requireAuth, (req, res) => {
+    db.all(
+        `SELECT form_id as formId, form_name as formName, webhook_url as webhookUrl, 
+                mentions, created_at as createdAt 
+         FROM forms ORDER BY created_at DESC`,
+        (err, rows) => {
             if (err) {
-                console.error('Ошибка выхода:', err);
+                console.error('Ошибка получения форм:', err);
+                return res.status(500).json({ status: 'error', message: 'Ошибка сервера' });
             }
-            res.json({ status: 'success', message: 'Выход выполнен' });
+            
+            const forms = rows.map(form => ({
+                ...form,
+                webhookPreview: form.webhookUrl ? form.webhookUrl.substring(0, 50) + '...' : 'Не указан'
+            }));
+
+            res.json({
+                status: 'success',
+                total: forms.length,
+                forms
+            });
+        }
+    );
+});
+
+app.get('/admin/forms/:formId/config', requireAuth, (req, res) => {
+    const { formId } = req.params;
+    
+    db.get(
+        `SELECT title, description, color, footer, mentions 
+         FROM forms WHERE form_id = ?`,
+        [formId],
+        (err, row) => {
+            if (err) {
+                console.error('Ошибка получения конфигурации:', err);
+                return res.status(500).json({ status: 'error', message: 'Ошибка сервера' });
+            }
+            
+            if (!row) {
+                return res.status(404).json({ status: 'error', message: 'Форма не найдена' });
+            }
+
+            res.json({
+                status: 'success',
+                config: {
+                    title: row.title || '',
+                    description: row.description || '',
+                    color: row.color || '#5865f2',
+                    footer: row.footer || '',
+                    mentions: row.mentions || ''
+                }
+            });
+        }
+    );
+});
+
+app.put('/admin/forms/:formId/config', requireAuth, (req, res) => {
+    const { formId } = req.params;
+    const config = req.body;
+    
+    db.run(
+        `UPDATE forms SET 
+            title = ?, description = ?, color = ?, footer = ?, mentions = ?, updated_at = CURRENT_TIMESTAMP 
+         WHERE form_id = ?`,
+        [config.title, config.description, config.color, config.footer, config.mentions, formId],
+        function(err) {
+            if (err) {
+                console.error('Ошибка сохранения конфигурации:', err);
+                return res.status(500).json({ status: 'error', message: 'Ошибка сервера' });
+            }
+            
+            if (this.changes === 0) {
+                return res.status(404).json({ status: 'error', message: 'Форма не найдена' });
+            }
+
+            logRequest(formId, 'CONFIG_UPDATED', 'Конфигурация обновлена');
+            
+            res.json({
+                status: 'success',
+                message: 'Настройки сохранены'
+            });
+        }
+    );
+});
+
+app.post('/admin/register-form', requireAuth, (req, res) => {
+    const { formId, formName, discordWebhookUrl } = req.body;
+
+    if (!formId || !formName || !discordWebhookUrl) {
+        return res.status(400).json({
+            status: 'error',
+            message: 'formId, formName и discordWebhookUrl обязательны'
         });
-    });
+    }
 
-    // Главная страница админки
-    app.get('/admin', requireAuth, (req, res) => {
-        res.send(ADMIN_HTML);
-    });
+    if (!isValidWebhookUrl(discordWebhookUrl)) {
+        return res.status(400).json({
+            status: 'error',
+            message: 'Неверный Discord Webhook URL. Должен начинаться с https://discord.com/api/webhooks/'
+        });
+    }
 
-    // API маршруты для админки
-    app.get('/admin/forms', requireAuth, (req, res) => {
-        db.all(
-            `SELECT form_id as formId, form_name as formName, webhook_url as webhookUrl, 
-                    mentions, created_at as createdAt 
-             FROM forms ORDER BY created_at DESC`,
-            (err, rows) => {
-                if (err) {
-                    console.error('Ошибка получения форм:', err);
-                    return res.status(500).json({ status: 'error', message: 'Ошибка сервера' });
-                }
-                
-                const forms = rows.map(form => ({
-                    ...form,
-                    webhookPreview: form.webhookUrl ? form.webhookUrl.substring(0, 50) + '...' : 'Не указан'
-                }));
-
-                res.json({
-                    status: 'success',
-                    total: forms.length,
-                    forms
-                });
-            }
-        );
-    });
-
-    app.get('/admin/forms/:formId/config', requireAuth, (req, res) => {
-        const { formId } = req.params;
-        
-        db.get(
-            `SELECT title, description, color, footer, mentions 
-             FROM forms WHERE form_id = ?`,
-            [formId],
-            (err, row) => {
-                if (err) {
-                    console.error('Ошибка получения конфигурации:', err);
-                    return res.status(500).json({ status: 'error', message: 'Ошибка сервера' });
-                }
-                
-                if (!row) {
-                    return res.status(404).json({ status: 'error', message: 'Форма не найдена' });
-                }
-
-                res.json({
-                    status: 'success',
-                    config: {
-                        title: row.title || '',
-                        description: row.description || '',
-                        color: row.color || '#5865f2',
-                        footer: row.footer || '',
-                        mentions: row.mentions || ''
-                    }
-                });
-            }
-        );
-    });
-
-    app.put('/admin/forms/:formId/config', requireAuth, (req, res) => {
-        const { formId } = req.params;
-        const config = req.body;
-        
-        db.run(
-            `UPDATE forms SET 
-                title = ?, description = ?, color = ?, footer = ?, mentions = ?, updated_at = CURRENT_TIMESTAMP 
-             WHERE form_id = ?`,
-            [config.title, config.description, config.color, config.footer, config.mentions, formId],
-            function(err) {
-                if (err) {
-                    console.error('Ошибка сохранения конфигурации:', err);
-                    return res.status(500).json({ status: 'error', message: 'Ошибка сервера' });
-                }
-                
-                if (this.changes === 0) {
-                    return res.status(404).json({ status: 'error', message: 'Форма не найдена' });
-                }
-
-                logRequest(formId, 'CONFIG_UPDATED', 'Конфигурация обновлена');
-                
-                res.json({
-                    status: 'success',
-                    message: 'Настройки сохранены'
-                });
-            }
-        );
-    });
-
-    app.post('/admin/register-form', requireAuth, (req, res) => {
-        const { formId, formName, discordWebhookUrl } = req.body;
-
-        if (!formId || !formName || !discordWebhookUrl) {
-            return res.status(400).json({
-                status: 'error',
-                message: 'formId, formName и discordWebhookUrl обязательны'
-            });
-        }
-
-        if (!isValidWebhookUrl(discordWebhookUrl)) {
-            return res.status(400).json({
-                status: 'error',
-                message: 'Неверный Discord Webhook URL. Должен начинаться с https://discord.com/api/webhooks/'
-            });
-        }
-
-        db.run(
-            `INSERT INTO forms (form_id, form_name, webhook_url) 
-             VALUES (?, ?, ?)`,
-            [formId, formName, discordWebhookUrl],
-            function(err) {
-                if (err) {
-                    if (err.message.includes('UNIQUE constraint failed')) {
-                        return res.status(400).json({
-                            status: 'error',
-                            message: `Форма с ID ${formId} уже зарегистрирована`
-                        });
-                    }
-                    console.error('Ошибка регистрации формы:', err);
-                    return res.status(500).json({
+    db.run(
+        `INSERT INTO forms (form_id, form_name, webhook_url) 
+         VALUES (?, ?, ?)`,
+        [formId, formName, discordWebhookUrl],
+        function(err) {
+            if (err) {
+                if (err.message.includes('UNIQUE constraint failed')) {
+                    return res.status(400).json({
                         status: 'error',
-                        message: 'Внутренняя ошибка сервера'
+                        message: `Форма с ID ${formId} уже зарегистрирована`
                     });
                 }
-
-                console.log(`✅ Зарегистрирована форма: ${formId} - ${formName}`);
-                logRequest(formId, 'REGISTERED', `Форма "${formName}" зарегистрирована`);
-
-                res.json({
-                    status: 'success',
-                    message: `Форма "${formName}" успешно зарегистрирована`,
-                    formId: formId
+                console.error('Ошибка регистрации формы:', err);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Внутренняя ошибка сервера'
                 });
             }
-        );
-    });
 
-    app.delete('/admin/forms/:formId', requireAuth, (req, res) => {
-        const { formId } = req.params;
+            console.log(`✅ Зарегистрирована форма: ${formId} - ${formName}`);
+            logRequest(formId, 'REGISTERED', `Форма "${formName}" зарегистрирована`);
+
+            res.json({
+                status: 'success',
+                message: `Форма "${formName}" успешно зарегистрирована`,
+                formId: formId
+            });
+        }
+    );
+});
+
+app.delete('/admin/forms/:formId', requireAuth, (req, res) => {
+    const { formId } = req.params;
+    
+    db.get('SELECT form_name FROM forms WHERE form_id = ?', [formId], (err, row) => {
+        if (err) {
+            console.error('Ошибка поиска формы:', err);
+            return res.status(500).json({ status: 'error', message: 'Ошибка сервера' });
+        }
         
-        db.get('SELECT form_name FROM forms WHERE form_id = ?', [formId], (err, row) => {
+        if (!row) {
+            return res.status(404).json({ status: 'error', message: `Форма ${formId} не найдена` });
+        }
+
+        const formName = row.form_name;
+        
+        db.run('DELETE FROM forms WHERE form_id = ?', [formId], function(err) {
+            if (err) {
+                console.error('Ошибка удаления формы:', err);
+                return res.status(500).json({ status: 'error', message: 'Ошибка сервера' });
+            }
+            
+            console.log(`🗑️ Удалена форма: ${formId} - ${formName}`);
+            logRequest(formId, 'DELETED', `Форма "${formName}" удалена`);
+            
+            res.json({ status: 'success', message: `Форма "${formName}" удалена` });
+        });
+    });
+});
+
+app.post('/admin/test-webhook/:formId', requireAuth, (req, res) => {
+    const { formId } = req.params;
+    
+    db.get(
+        `SELECT form_name, webhook_url, title, description, color, footer, mentions 
+         FROM forms WHERE form_id = ?`,
+        [formId],
+        (err, formConfig) => {
             if (err) {
                 console.error('Ошибка поиска формы:', err);
                 return res.status(500).json({ status: 'error', message: 'Ошибка сервера' });
             }
             
-            if (!row) {
+            if (!formConfig) {
                 return res.status(404).json({ status: 'error', message: `Форма ${formId} не найдена` });
             }
 
-            const formName = row.form_name;
-            
-            db.run('DELETE FROM forms WHERE form_id = ?', [formId], function(err) {
-                if (err) {
-                    console.error('Ошибка удаления формы:', err);
-                    return res.status(500).json({ status: 'error', message: 'Ошибка сервера' });
-                }
-                
-                console.log(`🗑️ Удалена форма: ${formId} - ${formName}`);
-                logRequest(formId, 'DELETED', `Форма "${formName}" удалена`);
-                
-                res.json({ status: 'success', message: `Форма "${formName}" удалена` });
-            });
-        });
-    });
+            // Создаем тестовые данные
+            const testData = {
+                form: { id: formId, title: formConfig.form_name },
+                questions: [
+                    { id: 'q1', text: 'Ваш Discord ID' },
+                    { id: 'q2', text: 'Ваше имя' },
+                    { id: 'q3', text: 'Сообщение' }
+                ],
+                answers: [
+                    { question_id: 'q1', text: '123456789012345678' },
+                    { question_id: 'q2', text: 'Тестовый пользователь' },
+                    { question_id: 'q3', text: 'Это тестовое сообщение из панели управления' }
+                ]
+            };
 
-    app.post('/admin/test-webhook/:formId', requireAuth, (req, res) => {
-        const { formId } = req.params;
-        
-        db.get(
-            `SELECT form_name, webhook_url, title, description, color, footer, mentions 
-             FROM forms WHERE form_id = ?`,
-            [formId],
-            (err, formConfig) => {
-                if (err) {
-                    console.error('Ошибка поиска формы:', err);
-                    return res.status(500).json({ status: 'error', message: 'Ошибка сервера' });
-                }
-                
-                if (!formConfig) {
-                    return res.status(404).json({ status: 'error', message: `Форма ${formId} не найдена` });
-                }
+            sendDiscordMessage(formConfig, testData.form, testData.questions, testData.answers)
+                .then(() => {
+                    logRequest(formId, 'TEST', 'Тестовое сообщение отправлено');
+                    res.json({ status: 'success', message: 'Тестовое сообщение отправлено в Discord' });
+                })
+                .catch(error => {
+                    console.error('Ошибка тестирования вебхука:', error);
+                    logRequest(formId, 'TEST_ERROR', error.message);
+                    res.status(500).json({ status: 'error', message: 'Ошибка отправки тестового сообщения' });
+                });
+        }
+    );
+});
 
-                // Создаем тестовые данные
-                const testData = {
-                    form: { id: formId, title: formConfig.form_name },
-                    questions: [
-                        { id: 'q1', text: 'Ваш Discord ID' },
-                        { id: 'q2', text: 'Ваше имя' },
-                        { id: 'q3', text: 'Сообщение' }
-                    ],
-                    answers: [
-                        { question_id: 'q1', text: '123456789012345678' },
-                        { question_id: 'q2', text: 'Тестовый пользователь' },
-                        { question_id: 'q3', text: 'Это тестовое сообщение из панели управления' }
-                    ]
-                };
-
-                sendDiscordMessage(formConfig, testData.form, testData.questions, testData.answers)
-                    .then(() => {
-                        logRequest(formId, 'TEST', 'Тестовое сообщение отправлено');
-                        res.json({ status: 'success', message: 'Тестовое сообщение отправлено в Discord' });
-                    })
-                    .catch(error => {
-                        console.error('Ошибка тестирования вебхука:', error);
-                        logRequest(formId, 'TEST_ERROR', error.message);
-                        res.status(500).json({ status: 'error', message: 'Ошибка отправки тестового сообщения' });
-                    });
-            }
-        );
-    });
-
-    app.get('/admin/logs', requireAuth, (req, res) => {
-        db.all(
-            `SELECT form_id, status, message, timestamp 
-             FROM logs ORDER BY timestamp DESC LIMIT 100`,
-            (err, rows) => {
-                if (err) {
-                    console.error('Ошибка получения логов:', err);
-                    return res.status(500).send('Ошибка чтения логов');
-                }
-                
-                const logs = rows.map(log => 
-                    `[${log.timestamp}] FORM:${log.form_id || 'SYSTEM'} STATUS:${log.status} ${log.message || ''}`
-                ).join('\n');
-                
-                res.set('Content-Type', 'text/plain');
-                res.send(logs);
-            }
-        );
-    });
-
-    app.delete('/admin/logs', requireAuth, (req, res) => {
-        db.run('DELETE FROM logs', function(err) {
+app.get('/admin/logs', requireAuth, (req, res) => {
+    db.all(
+        `SELECT form_id, status, message, timestamp 
+         FROM logs ORDER BY timestamp DESC LIMIT 100`,
+        (err, rows) => {
             if (err) {
-                console.error('Ошибка очистки логов:', err);
-                return res.status(500).json({ status: 'error', message: 'Ошибка очистки логов' });
+                console.error('Ошибка получения логов:', err);
+                return res.status(500).send('Ошибка чтения логов');
             }
             
-            logRequest('SYSTEM', 'LOGS_CLEARED', 'Логи очищены через админку');
-            res.json({ status: 'success', message: 'Логи очищены' });
-        });
-    });
+            const logs = rows.map(log => 
+                `[${log.timestamp}] FORM:${log.form_id || 'SYSTEM'} STATUS:${log.status} ${log.message || ''}`
+            ).join('\n');
+            
+            res.set('Content-Type', 'text/plain');
+            res.send(logs);
+        }
+    );
+});
 
-    // Health check
-    app.get('/health', (req, res) => {
-        res.json({ 
-            status: 'healthy', 
-            timestamp: new Date().toISOString(),
-            version: '4.4',
-            note: 'Умные упоминания: пользователь в сообщении, роль сверху'
-        });
+app.delete('/admin/logs', requireAuth, (req, res) => {
+    db.run('DELETE FROM logs', function(err) {
+        if (err) {
+            console.error('Ошибка очистки логов:', err);
+            return res.status(500).json({ status: 'error', message: 'Ошибка очистки логов' });
+        }
+        
+        logRequest('SYSTEM', 'LOGS_CLEARED', 'Логи очищены через админку');
+        res.json({ status: 'success', message: 'Логи очищены' });
     });
+});
 
+// Health check
+app.get('/health', (req, res) => {
+    res.json({ 
+        status: 'healthy', 
+        timestamp: new Date().toISOString(),
+        version: '4.5',
+        note: 'Поддержка JSON-RPC POST + GET + обычный POST'
+    });
+});
+
+// Инициализация при запуске
+initializeDatabase().then(database => {
+    db = database;
+    
     // Запуск сервера
     app.listen(PORT, '0.0.0.0', () => {
         console.log(`
@@ -1975,10 +2162,11 @@ initializeDatabase().then(database => {
 🌐 Доступ извне: http://95.164.93.95:${PORT}/admin
 🔐 Логин: admin / admin123
 
-🎉 ОСНОВНЫЕ ВОЗМОЖНОСТИ ВЕРСИИ 4.4:
+🎉 ОСНОВНЫЕ ВОЗМОЖНОСТИ ВЕРСИИ 4.5:
+✅ ПОДДЕРЖКА JSON-RPC POST (Яндекс Формы)
+✅ ПОДДЕРЖКА GET ЗАПРОСОВ
+✅ ПОДДЕРЖКА ОБЫЧНЫХ POST ЗАПРОСОВ
 ✅ УМНЫЕ УПОМИНАНИЯ: пользователь в сообщении, роль сверху
-✅ ПОДДЕРЖКА GET ЗАПРОСОВ от нового интерфейса Яндекс Форм
-✅ АВТОМАТИЧЕСКОЕ УПОМИНАНИЕ по Discord ID из первого поля
 🔐 БЕЗОПАСНАЯ АУТЕНТИФИКАЦИЯ
 
 ⚡ СЕРВЕР ГОТОВ К РАБОТЕ!
