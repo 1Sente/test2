@@ -13,7 +13,6 @@ const PORT = process.env.PORT || 3000;
 // Middleware
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-app.use(express.raw({ type: '*/*', limit: '10mb' }));
 app.use(express.static('public'));
 
 // Сессии
@@ -32,6 +31,7 @@ app.use(session({
 const DB_DIR = path.join(__dirname, 'data');
 const DB_FILE = path.join(DB_DIR, 'database.db');
 const SALT_ROUNDS = 12;
+const MAX_QUESTIONS = 20;
 
 // Создание необходимых директорий
 async function createDirectories() {
@@ -62,7 +62,6 @@ async function initializeDatabase() {
 
         // Создаем таблицы
         db.serialize(() => {
-            // Таблица пользователей
             db.run(`CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT UNIQUE NOT NULL,
@@ -72,7 +71,6 @@ async function initializeDatabase() {
                 if (err) console.error('Ошибка создания таблицы users:', err);
             });
 
-            // Таблица форм
             db.run(`CREATE TABLE IF NOT EXISTS forms (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 form_id TEXT UNIQUE NOT NULL,
@@ -81,15 +79,15 @@ async function initializeDatabase() {
                 title TEXT DEFAULT '',
                 description TEXT DEFAULT '',
                 color TEXT DEFAULT '#5865f2',
-                footer TEXT DEFAULT 'Яндекс Формы',
+                footer TEXT DEFAULT 'GTA5RP LAMESA',
                 mentions TEXT DEFAULT '',
+                question_titles TEXT DEFAULT '[]',
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )`, (err) => {
                 if (err) console.error('Ошибка создания таблицы forms:', err);
             });
 
-            // Таблица логов
             db.run(`CREATE TABLE IF NOT EXISTS logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 form_id TEXT,
@@ -101,7 +99,7 @@ async function initializeDatabase() {
             });
 
             // Создаем администратора по умолчанию
-            const defaultPassword = 'gta5rpLaMesa_Rayzaki100'; // СМЕНИТЕ ЭТОТ ПАРОЛЬ!
+            const defaultPassword = 'gta5rpLaMesa_Rayzaki100';
             bcrypt.hash(defaultPassword, SALT_ROUNDS, (err, hash) => {
                 if (err) {
                     console.error('Ошибка хеширования пароля:', err);
@@ -117,8 +115,6 @@ async function initializeDatabase() {
                             if (this.changes > 0) {
                                 console.log('👑 Создан администратор по умолчанию: admin / admin123');
                                 console.log('🔐 СМЕНИТЕ ПАРОЛЬ В КОДЕ!');
-                            } else {
-                                console.log('👑 Администратор уже существует');
                             }
                         }
                     }
@@ -163,26 +159,23 @@ function isValidWebhookUrl(url) {
 }
 
 // Функция отправки сообщения в Discord
-async function sendDiscordMessage(formConfig, formData, questions, answers) {
-    // Находим Discord ID в первом ответе
+async function sendDiscordMessage(formConfig, formData, answers) {
     let discordId = null;
     if (answers && answers.length > 0) {
         const firstAnswer = answers[0];
         discordId = firstAnswer.text ? firstAnswer.text.trim() : null;
         
-        // Очищаем Discord ID от лишних символов (оставляем только цифры)
         if (discordId) {
             discordId = discordId.replace(/[^0-9]/g, '');
         }
     }
 
-    // Формируем упоминание для content (только роль из настроек)
     let mentionContent = '';
     if (formConfig.mentions) {
         const additionalMentions = formConfig.mentions.split(',')
             .map(id => id.trim())
             .filter(id => id.length >= 17)
-            .map(id => `<@&${id}>`) // Упоминание роли
+            .map(id => `<@&${id}>`)
             .join(' ');
         
         if (additionalMentions) {
@@ -190,27 +183,36 @@ async function sendDiscordMessage(formConfig, formData, questions, answers) {
         }
     }
 
-    // Создаем Embed сообщение
     const embed = {
         title: formConfig.title || `📋 ${formData.title || formConfig.form_name}`,
         description: formConfig.description || null,
         color: parseInt((formConfig.color || '#5865f2').replace('#', ''), 16),
         fields: [],
         timestamp: new Date().toISOString(),
-        footer: formConfig.footer ? { text: formConfig.footer } : undefined
+        footer: formConfig.footer ? { text: formConfig.footer } : { text: 'GTA5RP LAMESA' }
     };
 
-    // Добавляем поля с вопросами и ответами
-    answers.forEach((answer, index) => {
-        const question = questions[index] || { text: `Вопрос ${index + 1}` };
-        if (question && answer.text) {
+    // Получаем кастомные названия вопросов
+    let questionTitles = [];
+    try {
+        questionTitles = JSON.parse(formConfig.question_titles || '[]');
+    } catch (e) {
+        console.error('Ошибка парсинга question_titles:', e);
+    }
+
+    const limitedAnswers = answers.slice(0, MAX_QUESTIONS);
+
+    limitedAnswers.forEach((answer, index) => {
+        if (answer.text) {
             const isDiscordIdField = index === 0;
             
-            // Для первого поля (Discord ID) добавляем упоминание пользователя в embed
+            // Используем кастомное название вопроса или генерируем стандартное
+            const questionText = questionTitles[index] || `Вопрос ${index + 1}`;
+            
             if (isDiscordIdField && discordId && discordId.length >= 17) {
                 embed.fields.push({
-                    name: question.text,
-                    value: `<@${discordId}>`, // Упоминание пользователя в embed
+                    name: questionText,
+                    value: `<@${discordId}>`,
                     inline: false
                 });
             } else {
@@ -218,7 +220,7 @@ async function sendDiscordMessage(formConfig, formData, questions, answers) {
                     answer.text.substring(0, 1020) + '...' : answer.text;
                 
                 embed.fields.push({
-                    name: question.text,
+                    name: questionText,
                     value: fieldValue,
                     inline: false
                 });
@@ -226,7 +228,14 @@ async function sendDiscordMessage(formConfig, formData, questions, answers) {
         }
     });
 
-    // Если нет полей, добавляем информационное сообщение
+    if (answers.length > MAX_QUESTIONS) {
+        embed.fields.push({
+            name: '📝 Примечание',
+            value: `Показаны первые ${MAX_QUESTIONS} из ${answers.length} вопросов. Остальные вопросы не были включены из-за ограничений Discord.`,
+            inline: false
+        });
+    }
+
     if (embed.fields.length === 0) {
         embed.fields.push({
             name: '📝 Информация',
@@ -235,12 +244,10 @@ async function sendDiscordMessage(formConfig, formData, questions, answers) {
         });
     }
 
-    // Отправляем в Discord
     const payload = {
         embeds: [embed]
     };
 
-    // Добавляем контент с упоминаниями ролей если есть
     if (mentionContent) {
         payload.content = mentionContent;
     }
@@ -249,21 +256,18 @@ async function sendDiscordMessage(formConfig, formData, questions, answers) {
     return response.data;
 }
 
-// Функция для парсинга ответов из разных форматов Яндекс Форм
+// Функция для парсинга ответов
 function parseYandexFormAnswers(answersData) {
     try {
-        // Если answersData уже массив, возвращаем как есть
         if (Array.isArray(answersData)) {
             return answersData;
         }
 
-        // Если это строка, пробуем распарсить JSON
         if (typeof answersData === 'string') {
             const parsed = JSON.parse(answersData);
             return parseYandexFormAnswers(parsed);
         }
 
-        // Если это объект с данными Яндекс Форм (новый формат)
         if (answersData && answersData.answer && answersData.answer.data) {
             const answers = [];
             const data = answersData.answer.data;
@@ -273,7 +277,6 @@ function parseYandexFormAnswers(answersData) {
                 if (field && field.value !== undefined) {
                     let answerText = field.value;
                     
-                    // Обработка разных типов ответов
                     if (Array.isArray(answerText)) {
                         answerText = answerText.map(item => item.text || item).join(', ');
                     } else if (typeof answerText === 'object') {
@@ -290,7 +293,6 @@ function parseYandexFormAnswers(answersData) {
             return answers;
         }
 
-        // Если это объект со старой структурой
         if (answersData && typeof answersData === 'object') {
             const answers = [];
             Object.keys(answersData).forEach(key => {
@@ -313,133 +315,14 @@ function parseYandexFormAnswers(answersData) {
 
 let db;
 
-// Основной вебхук для Яндекс Форм (GET запрос)
-app.get('/webhook/yandex-form', async (req, res) => {
-    try {
-        console.log('📨 Получен GET запрос от Яндекс Формы');
-        
-        // Логируем все параметры для отладки
-        console.log('Query параметры:', req.query);
-        
-        // Извлекаем данные из GET параметров
-        const { formId, formTitle, answers } = req.query;
-        
-        if (!formId) {
-            await logRequest('UNKNOWN', 'ERROR', 'Отсутствует formId в GET параметрах');
-            return res.status(400).json({
-                status: 'error',
-                message: 'Неверный формат данных: отсутствует formId'
-            });
-        }
-
-        // Парсим answers если они есть
-        let parsedAnswers = parseYandexFormAnswers(answers);
-
-        // Если answers не распарсились, пробуем найти ответы в других параметрах
-        if (parsedAnswers.length === 0) {
-            parsedAnswers = Object.entries(req.query)
-                .filter(([key, value]) => key !== 'formId' && key !== 'formTitle' && key !== 'answers')
-                .map(([key, value]) => ({
-                    question_id: key,
-                    text: String(value)
-                }));
-        }
-
-        console.log('Распарсенные ответы:', parsedAnswers);
-
-        // Ищем конфигурацию формы
-        db.get(
-            `SELECT form_name, webhook_url, title, description, color, footer, mentions 
-             FROM forms WHERE form_id = ?`,
-            [formId],
-            async (err, formConfig) => {
-                if (err) {
-                    console.error('Ошибка поиска формы:', err);
-                    await logRequest(formId, 'ERROR', 'Ошибка базы данных');
-                    return res.status(500).json({
-                        status: 'error',
-                        message: 'Внутренняя ошибка сервера'
-                    });
-                }
-                
-                if (!formConfig) {
-                    console.warn(`❌ Не найден вебхук для формы: ${formId}`);
-                    await logRequest(formId, 'NOT_FOUND', 'Форма не зарегистрирована');
-                    return res.status(404).json({
-                        status: 'error',
-                        message: `Вебхук для формы ${formId} не зарегистрирован`
-                    });
-                }
-
-                try {
-                    // Создаем структуру данных
-                    const formData = {
-                        id: formId,
-                        title: formTitle || formConfig.form_name
-                    };
-
-                    // Создаем вопросы на основе ответов
-                    const questions = parsedAnswers.map((answer, index) => ({
-                        id: answer.question_id || `q${index + 1}`,
-                        text: `Вопрос ${index + 1}`
-                    }));
-
-                    // Отправляем в Discord
-                    await sendDiscordMessage(formConfig, formData, questions, parsedAnswers);
-
-                    console.log(`✅ Данные формы "${formConfig.form_name}" отправлены в Discord`);
-                    await logRequest(formId, 'SENT', `Данные отправлены в Discord через GET`);
-
-                    res.json({
-                        status: 'success',
-                        message: `Данные отправлены в Discord`,
-                        formName: formConfig.form_name
-                    });
-                } catch (error) {
-                    console.error('❌ Ошибка отправки в Discord:', error);
-                    await logRequest(formId, 'DISCORD_ERROR', error.message);
-                    res.status(500).json({
-                        status: 'error',
-                        message: 'Ошибка отправки в Discord: ' + error.message
-                    });
-                }
-            }
-        );
-
-    } catch (error) {
-        console.error('❌ Ошибка обработки GET вебхука:', error);
-        logRequest(req.query.formId || 'UNKNOWN', 'ERROR', error.message);
-        res.status(500).json({
-            status: 'error',
-            message: 'Внутренняя ошибка сервера: ' + error.message
-        });
-    }
-});
-
-// POST вебхук с поддержкой JSON-RPC и обычного JSON
+// POST вебхук для Яндекс Форм
 app.post('/webhook/yandex-form', async (req, res) => {
     try {
         console.log('📨 Получен POST запрос от Яндекс Формы');
-        console.log('Content-Type:', req.headers['content-type']);
         
         let requestBody = req.body;
         
-        // Пробуем распарсить тело запроса если оно пришло как Buffer или строка
-        if (Buffer.isBuffer(requestBody)) {
-            requestBody = requestBody.toString('utf8');
-        }
-        
-        if (typeof requestBody === 'string') {
-            try {
-                requestBody = JSON.parse(requestBody);
-            } catch (e) {
-                console.log('Тело запроса не JSON, используем как есть');
-            }
-        }
-        
-        console.log('Parsed Body:', requestBody);
-
-        let formId, formTitle, answers, questions;
+        let formId, formTitle, answers;
 
         // Обработка JSON-RPC запроса
         if (requestBody && requestBody.jsonrpc === '2.0') {
@@ -450,7 +333,6 @@ app.post('/webhook/yandex-form', async (req, res) => {
             formId = params.formId;
             formTitle = params.formTitle;
             
-            // Парсим answers из JSON-RPC
             if (params.answers) {
                 if (typeof params.answers === 'string') {
                     try {
@@ -467,15 +349,8 @@ app.post('/webhook/yandex-form', async (req, res) => {
                 answers = [];
             }
 
-            // Создаем вопросы
-            questions = answers.map((answer, index) => ({
-                id: answer.question_id || `q${index + 1}`,
-                text: `Вопрос ${index + 1}`
-            }));
-
-            // Ищем конфигурацию формы
             db.get(
-                `SELECT form_name, webhook_url, title, description, color, footer, mentions 
+                `SELECT form_name, webhook_url, title, description, color, footer, mentions, question_titles
                  FROM forms WHERE form_id = ?`,
                 [formId],
                 async (err, formConfig) => {
@@ -505,7 +380,7 @@ app.post('/webhook/yandex-form', async (req, res) => {
                             title: formTitle || formConfig.form_name
                         };
 
-                        await sendDiscordMessage(formConfig, formData, questions, answers);
+                        await sendDiscordMessage(formConfig, formData, answers);
 
                         console.log(`✅ Данные формы "${formConfig.form_name}" отправлены в Discord через JSON-RPC`);
                         await logRequest(formId, 'SENT', `Данные отправлены в Discord через JSON-RPC`);
@@ -533,23 +408,20 @@ app.post('/webhook/yandex-form', async (req, res) => {
             return;
         }
 
-        // Обработка обычного POST запроса (для обратной совместимости)
+        // Обработка обычного POST запроса
         if (requestBody && requestBody.form && requestBody.form.id) {
             console.log('🔧 Обработка обычного POST запроса');
             
             formId = requestBody.form.id;
             formTitle = requestBody.form.title;
             answers = requestBody.answers || [];
-            questions = requestBody.questions || [];
         } else {
-            // Пробуем извлечь данные из тела запроса другими способами
             formId = requestBody.formId || requestBody.form_id;
             formTitle = requestBody.formTitle || requestBody.form_title;
             
             if (requestBody.answers) {
                 answers = parseYandexFormAnswers(requestBody.answers);
             } else {
-                // Извлекаем ответы из других полей
                 answers = Object.entries(requestBody)
                     .filter(([key, value]) => !['formId', 'form_id', 'formTitle', 'form_title', 'answers'].includes(key))
                     .map(([key, value]) => ({
@@ -557,11 +429,6 @@ app.post('/webhook/yandex-form', async (req, res) => {
                         text: String(value)
                     }));
             }
-            
-            questions = answers.map((answer, index) => ({
-                id: answer.question_id || `q${index + 1}`,
-                text: `Вопрос ${index + 1}`
-            }));
         }
 
         if (!formId) {
@@ -572,9 +439,8 @@ app.post('/webhook/yandex-form', async (req, res) => {
             });
         }
 
-        // Ищем конфигурацию формы
         db.get(
-            `SELECT form_name, webhook_url, title, description, color, footer, mentions 
+            `SELECT form_name, webhook_url, title, description, color, footer, mentions, question_titles
              FROM forms WHERE form_id = ?`,
             [formId],
             async (err, formConfig) => {
@@ -602,7 +468,7 @@ app.post('/webhook/yandex-form', async (req, res) => {
                         title: formTitle || formConfig.form_name
                     };
 
-                    await sendDiscordMessage(formConfig, formData, questions, answers);
+                    await sendDiscordMessage(formConfig, formData, answers);
 
                     console.log(`✅ Данные формы "${formConfig.form_name}" отправлены в Discord`);
                     await logRequest(formId, 'SENT', `Данные отправлены в Discord через POST`);
@@ -633,7 +499,7 @@ app.post('/webhook/yandex-form', async (req, res) => {
     }
 });
 
-// HTML страница входа (без изменений)
+// HTML страница входа
 const LOGIN_HTML = `
 <!DOCTYPE html>
 <html lang="ru">
@@ -805,7 +671,7 @@ const LOGIN_HTML = `
 </html>
 `;
 
-// HTML админки (без изменений)
+// HTML админки
 const ADMIN_HTML = `
 <!DOCTYPE html>
 <html lang="ru">
@@ -1232,6 +1098,24 @@ const ADMIN_HTML = `
             align-items: center;
             gap: 8px;
         }
+
+        .question-title-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 10px;
+            padding: 10px;
+            background: #2f3136;
+            border-radius: 4px;
+        }
+
+        .question-title-item input {
+            flex: 1;
+        }
+
+        .question-title-item .btn {
+            padding: 8px 12px;
+        }
     </style>
 </head>
 <body>
@@ -1239,7 +1123,7 @@ const ADMIN_HTML = `
         <div class="header-bar">
             <div class="header">
                 <h1><i class="fab fa-discord"></i> Яндекс Формы → Discord</h1>
-                <p>Автоматические упоминания: пользователь в сообщении, роль сверху</p>
+                <p>Кастомные названия вопросов + умные упоминания</p>
             </div>
             <div class="user-info">
                 <span>Вы вошли как: <strong id="username">admin</strong></span>
@@ -1261,16 +1145,17 @@ const ADMIN_HTML = `
                 <div>Статус сервера</div>
             </div>
             <div class="stat-card">
-                <div class="stat-number"><i class="fas fa-at"></i></div>
-                <div>Умные упоминания</div>
+                <div class="stat-number">${MAX_QUESTIONS}</div>
+                <div>Макс. вопросов</div>
             </div>
         </div>
 
         <div class="info-box">
-            <h4><i class="fas fa-info-circle"></i> Новая логика упоминаний</h4>
-            <p><strong>Первый вопрос в форме должен быть "Discord ID"!</strong></p>
-            <p><strong>В сообщении:</strong> пользователь будет упомянут по Discord ID из первого поля</p>
-            <p><strong>Сверху:</strong> будет упомянута роль из настроек (если указана)</p>
+            <h4><i class="fas fa-info-circle"></i> Новая логика работы</h4>
+            <p><strong>Первый вопрос:</strong> должен быть "Discord ID" для упоминания пользователя</p>
+            <p><strong>Названия вопросов:</strong> задаются в настройках формы (не берутся из Яндекс Форм)</p>
+            <p><strong>Упоминания:</strong> пользователь в сообщении, роль сверху</p>
+            <p><strong>Ограничение:</strong> до ${MAX_QUESTIONS} вопросов</p>
         </div>
 
         <div class="tab-container">
@@ -1354,6 +1239,36 @@ const ADMIN_HTML = `
                             <i class="fas fa-copy"></i> Копировать
                         </button>
                     </div>
+
+                    <div class="info-box">
+                        <h4><i class="fas fa-info-circle"></i> Настройки для Яндекс Форм</h4>
+                        <p><strong>URL:</strong> http://ваш_сервер:${PORT}/webhook/yandex-form</p>
+                        <p><strong>Метод:</strong> POST</p>
+                        <p><strong>Тип содержимого:</strong> application/json</p>
+                        <p><strong>Тело запроса (JSON-RPC):</strong></p>
+                        <div class="mention-example">
+{
+  "jsonrpc": "2.0",
+  "method": "submitForm",
+  "params": {
+    "formId": "{formId}",
+    "formTitle": "{formTitle}",
+    "answers": {answers | JSON}
+  },
+  "id": 1
+}
+                        </div>
+                        <p><strong>Или тело запроса (обычный JSON):</strong></p>
+                        <div class="mention-example">
+{
+  "formId": "{formId}",
+  "formTitle": "{formTitle}",
+  "answers": {answers | JSON}
+}
+                        </div>
+                        <p><strong>Важно:</strong> Используйте фильтр JSON для переменной <code>answers</code></p>
+                        <p><strong>Ограничение:</strong> максимум ${MAX_QUESTIONS} вопросов</p>
+                    </div>
                 </div>
             </div>
 
@@ -1374,14 +1289,15 @@ const ADMIN_HTML = `
 
     <!-- Модальное окно настройки формы -->
     <div id="configModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 1000; justify-content: center; align-items: center;">
-        <div class="discord-card" style="max-width: 600px; width: 95%; max-height: 90vh; overflow-y: auto;">
-            <h2><i class="fas fa-sliders-h"></i> Настройка внешнего вида</h2>
+        <div class="discord-card" style="max-width: 800px; width: 95%; max-height: 90vh; overflow-y: auto;">
+            <h2><i class="fas fa-sliders-h"></i> Настройка формы</h2>
             <p>Настройте как будут выглядеть сообщения из этой формы в Discord</p>
             
             <div class="info-box">
-                <h4><i class="fas fa-at"></i> Новая логика упоминаний</h4>
-                <p><strong>В сообщении:</strong> пользователь будет упомянут по Discord ID из первого поля</p>
-                <p><strong>Сверху:</strong> будет упомянута роль указанная ниже</p>
+                <h4><i class="fas fa-at"></i> Логика работы</h4>
+                <p><strong>Первый вопрос:</strong> должен быть "Discord ID" для упоминания пользователя</p>
+                <p><strong>Названия вопросов:</strong> задаются ниже (не берутся из Яндекс Форм)</p>
+                <p><strong>Упоминания:</strong> пользователь в сообщении, роль сверху</p>
             </div>
             
             <div class="config-section">
@@ -1405,7 +1321,7 @@ const ADMIN_HTML = `
 
                 <div class="form-group">
                     <label for="configFooter">Текст в подвале</label>
-                    <input type="text" id="configFooter" placeholder="Например: Яндекс Формы">
+                    <input type="text" id="configFooter" value="GTA5RP LAMESA" placeholder="Например: GTA5RP LAMESA">
                 </div>
             </div>
 
@@ -1426,6 +1342,21 @@ const ADMIN_HTML = `
             </div>
 
             <div class="config-section">
+                <h3><i class="fas fa-question-circle"></i> Названия вопросов</h3>
+                <p style="margin-bottom: 1rem; font-size: 0.9rem; color: #b9bbbe;">
+                    Задайте названия для вопросов. Первый вопрос должен быть "Discord ID" для правильного упоминания.
+                </p>
+                
+                <div id="questionTitlesContainer">
+                    <!-- Динамически добавляемые поля для вопросов -->
+                </div>
+                
+                <button type="button" onclick="addQuestionTitleField()" class="btn btn-secondary">
+                    <i class="fas fa-plus"></i> Добавить вопрос
+                </button>
+            </div>
+
+            <div class="config-section">
                 <h3><i class="fas fa-eye"></i> Предпросмотр</h3>
                 <div class="embed-preview">
                     <div class="author">
@@ -1434,14 +1365,14 @@ const ADMIN_HTML = `
                     </div>
                     <div class="title" id="previewTitle">Заголовок сообщения</div>
                     <div class="field">
-                        <div class="name">Discord ID</div>
+                        <div class="name" id="previewQuestion1">Discord ID</div>
                         <div>&lt;@123456789012345678&gt; 👆 Упоминание в сообщении</div>
                     </div>
                     <div class="field">
-                        <div class="name">Вопрос 2</div>
+                        <div class="name" id="previewQuestion2">Вопрос 2</div>
                         <div>Ответ 2</div>
                     </div>
-                    <div class="footer" id="previewFooter">Текст подвала</div>
+                    <div class="footer" id="previewFooter">GTA5RP LAMESA</div>
                 </div>
             </div>
 
@@ -1462,7 +1393,6 @@ const ADMIN_HTML = `
     <script>
         let currentEditingForm = null;
 
-        // Загрузка списка форм
         async function loadForms() {
             try {
                 const response = await fetch('/admin/forms', {
@@ -1492,7 +1422,6 @@ const ADMIN_HTML = `
                 testSelect.innerHTML = '<option value="">-- Выберите форму --</option>';
                 
                 data.forms.forEach(form => {
-                    // Карточка формы
                     const formCard = document.createElement('div');
                     formCard.className = 'form-card';
                     formCard.innerHTML = \`
@@ -1514,7 +1443,6 @@ const ADMIN_HTML = `
                     \`;
                     formsGrid.appendChild(formCard);
                     
-                    // Опция для тестового селекта
                     const option = document.createElement('option');
                     option.value = form.formId;
                     option.textContent = \`\${form.formName} (\${form.formId})\`;
@@ -1526,7 +1454,6 @@ const ADMIN_HTML = `
             }
         }
         
-        // Регистрация новой формы
         document.getElementById('registerForm').addEventListener('submit', async (e) => {
             e.preventDefault();
             
@@ -1560,7 +1487,6 @@ const ADMIN_HTML = `
             }
         });
         
-        // Удаление формы
         async function deleteForm(formId) {
             if (!confirm('Вы уверены, что хотите удалить эту связь?')) return;
             
@@ -1588,7 +1514,52 @@ const ADMIN_HTML = `
             }
         }
         
-        // Настройка формы
+        function addQuestionTitleField(title = '') {
+            const container = document.getElementById('questionTitlesContainer');
+            const index = container.children.length + 1;
+            const fieldHTML = \`
+                <div class="question-title-item">
+                    <input type="text" 
+                           class="question-title-input" 
+                           placeholder="Название вопроса \${index}" 
+                           value="\${title}"
+                           oninput="updatePreview()">
+                    <button type="button" class="btn btn-danger" onclick="this.parentElement.remove(); updatePreview()">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+            \`;
+            container.insertAdjacentHTML('beforeend', fieldHTML);
+            updatePreview();
+        }
+        
+        function loadQuestionTitles(questionTitles) {
+            const container = document.getElementById('questionTitlesContainer');
+            container.innerHTML = '';
+            
+            if (questionTitles && questionTitles.length > 0) {
+                questionTitles.forEach(title => {
+                    addQuestionTitleField(title);
+                });
+            } else {
+                // Добавляем поля по умолчанию
+                addQuestionTitleField('Discord ID');
+                addQuestionTitleField('Имя и фамилия');
+                addQuestionTitleField('Возраст');
+            }
+        }
+        
+        function getQuestionTitles() {
+            const inputs = document.querySelectorAll('.question-title-input');
+            const titles = [];
+            inputs.forEach(input => {
+                if (input.value.trim()) {
+                    titles.push(input.value.trim());
+                }
+            });
+            return titles;
+        }
+        
         async function configureForm(formId) {
             currentEditingForm = formId;
             
@@ -1604,18 +1575,18 @@ const ADMIN_HTML = `
                 
                 const config = await response.json();
                 
-                // Заполняем поля формы
                 document.getElementById('configTitle').value = config.title || '';
                 document.getElementById('configDescription').value = config.description || '';
                 document.getElementById('configColor').value = config.color || '#5865f2';
                 document.getElementById('configColorText').textContent = config.color || '#5865f2';
-                document.getElementById('configFooter').value = config.footer || '';
+                document.getElementById('configFooter').value = config.footer || 'GTA5RP LAMESA';
                 document.getElementById('configMentions').value = config.mentions || '';
                 
-                // Обновляем предпросмотр
+                // Загружаем названия вопросов
+                loadQuestionTitles(config.question_titles || []);
+                
                 updatePreview();
                 
-                // Показываем модальное окно
                 document.getElementById('configModal').style.display = 'flex';
                 
             } catch (error) {
@@ -1623,16 +1594,18 @@ const ADMIN_HTML = `
             }
         }
         
-        // Сохранение конфигурации формы
         async function saveFormConfig() {
             if (!currentEditingForm) return;
+            
+            const questionTitles = getQuestionTitles();
             
             const config = {
                 title: document.getElementById('configTitle').value,
                 description: document.getElementById('configDescription').value,
                 color: document.getElementById('configColor').value,
                 footer: document.getElementById('configFooter').value,
-                mentions: document.getElementById('configMentions').value
+                mentions: document.getElementById('configMentions').value,
+                question_titles: questionTitles
             };
             
             try {
@@ -1662,7 +1635,6 @@ const ADMIN_HTML = `
             }
         }
         
-        // Сброс настроек
         function resetFormConfig() {
             if (!confirm('Сбросить все настройки к значениям по умолчанию?')) return;
             
@@ -1670,30 +1642,42 @@ const ADMIN_HTML = `
             document.getElementById('configDescription').value = '';
             document.getElementById('configColor').value = '#5865f2';
             document.getElementById('configColorText').textContent = '#5865f2';
-            document.getElementById('configFooter').value = '';
+            document.getElementById('configFooter').value = 'GTA5RP LAMESA';
             document.getElementById('configMentions').value = '';
+            
+            loadQuestionTitles(['Discord ID', 'Имя и фамилия', 'Возраст']);
             
             updatePreview();
         }
         
-        // Скрыть модальное окно
         function hideConfigModal() {
             document.getElementById('configModal').style.display = 'none';
             currentEditingForm = null;
         }
         
-        // Обновление предпросмотра
         function updatePreview() {
             const title = document.getElementById('configTitle').value || 'Название формы';
-            const footer = document.getElementById('configFooter').value || 'Яндекс Формы';
+            const footer = document.getElementById('configFooter').value || 'GTA5RP LAMESA';
             const color = document.getElementById('configColor').value;
+            const questionTitles = getQuestionTitles();
             
             document.getElementById('previewTitle').textContent = title;
             document.getElementById('previewFooter').textContent = footer;
             document.getElementById('previewTitle').style.color = color;
+            
+            // Обновляем названия вопросов в превью
+            const previewQuestions = document.querySelectorAll('.embed-preview .field .name');
+            previewQuestions.forEach((preview, index) => {
+                if (questionTitles[index]) {
+                    preview.textContent = questionTitles[index];
+                } else if (index === 0) {
+                    preview.textContent = 'Discord ID';
+                } else {
+                    preview.textContent = \`Вопрос \${index + 1}\`;
+                }
+            });
         }
         
-        // Слушатели событий для предпросмотра
         document.getElementById('configTitle').addEventListener('input', updatePreview);
         document.getElementById('configFooter').addEventListener('input', updatePreview);
         document.getElementById('configColor').addEventListener('input', function() {
@@ -1701,7 +1685,6 @@ const ADMIN_HTML = `
             updatePreview();
         });
         
-        // Тестирование вебхука
         async function testWebhook() {
             const formId = document.getElementById('testFormId').value;
             if (!formId) {
@@ -1736,7 +1719,6 @@ const ADMIN_HTML = `
             }
         }
         
-        // Переключение вкладок
         function showTab(tabName) {
             document.querySelectorAll('.tab-content').forEach(tab => {
                 tab.classList.remove('active');
@@ -1753,14 +1735,12 @@ const ADMIN_HTML = `
             }
         }
         
-        // Копирование Webhook URL
         function copyWebhookUrl() {
             const urlElement = document.getElementById('webhookUrlText');
             navigator.clipboard.writeText(urlElement.textContent);
             showAlert('URL скопирован в буфер обмена!', 'success');
         }
         
-        // Загрузка логов
         async function loadLogs() {
             try {
                 const response = await fetch('/admin/logs', {
@@ -1779,7 +1759,6 @@ const ADMIN_HTML = `
             }
         }
         
-        // Очистка логов
         async function clearLogs() {
             if (!confirm('Вы уверены, что хотите очистить все логи?')) return;
             
@@ -1807,7 +1786,6 @@ const ADMIN_HTML = `
             }
         }
         
-        // Выход из системы
         async function logout() {
             try {
                 const response = await fetch('/admin/logout', { 
@@ -1820,7 +1798,6 @@ const ADMIN_HTML = `
             }
         }
         
-        // Вспомогательные функции
         function showAlert(message, type) {
             const alert = document.getElementById('alert');
             alert.textContent = message;
@@ -1836,7 +1813,6 @@ const ADMIN_HTML = `
             }, 5000);
         }
         
-        // Инициализация при загрузке
         document.addEventListener('DOMContentLoaded', function() {
             document.getElementById('webhookUrlText').textContent = window.location.origin + '/webhook/yandex-form';
             loadForms();
@@ -1927,7 +1903,7 @@ app.get('/admin/forms/:formId/config', requireAuth, (req, res) => {
     const { formId } = req.params;
     
     db.get(
-        `SELECT title, description, color, footer, mentions 
+        `SELECT title, description, color, footer, mentions, question_titles
          FROM forms WHERE form_id = ?`,
         [formId],
         (err, row) => {
@@ -1940,14 +1916,22 @@ app.get('/admin/forms/:formId/config', requireAuth, (req, res) => {
                 return res.status(404).json({ status: 'error', message: 'Форма не найдена' });
             }
 
+            let question_titles = [];
+            try {
+                question_titles = JSON.parse(row.question_titles || '[]');
+            } catch (e) {
+                console.error('Ошибка парсинга question_titles:', e);
+            }
+
             res.json({
                 status: 'success',
                 config: {
                     title: row.title || '',
                     description: row.description || '',
                     color: row.color || '#5865f2',
-                    footer: row.footer || '',
-                    mentions: row.mentions || ''
+                    footer: row.footer || 'GTA5RP LAMESA',
+                    mentions: row.mentions || '',
+                    question_titles: question_titles
                 }
             });
         }
@@ -1960,9 +1944,17 @@ app.put('/admin/forms/:formId/config', requireAuth, (req, res) => {
     
     db.run(
         `UPDATE forms SET 
-            title = ?, description = ?, color = ?, footer = ?, mentions = ?, updated_at = CURRENT_TIMESTAMP 
+            title = ?, description = ?, color = ?, footer = ?, mentions = ?, question_titles = ?, updated_at = CURRENT_TIMESTAMP 
          WHERE form_id = ?`,
-        [config.title, config.description, config.color, config.footer, config.mentions, formId],
+        [
+            config.title, 
+            config.description, 
+            config.color, 
+            config.footer, 
+            config.mentions, 
+            JSON.stringify(config.question_titles || []), 
+            formId
+        ],
         function(err) {
             if (err) {
                 console.error('Ошибка сохранения конфигурации:', err);
@@ -2064,7 +2056,7 @@ app.post('/admin/test-webhook/:formId', requireAuth, (req, res) => {
     const { formId } = req.params;
     
     db.get(
-        `SELECT form_name, webhook_url, title, description, color, footer, mentions 
+        `SELECT form_name, webhook_url, title, description, color, footer, mentions, question_titles
          FROM forms WHERE form_id = ?`,
         [formId],
         (err, formConfig) => {
@@ -2077,22 +2069,18 @@ app.post('/admin/test-webhook/:formId', requireAuth, (req, res) => {
                 return res.status(404).json({ status: 'error', message: `Форма ${formId} не найдена` });
             }
 
-            // Создаем тестовые данные
             const testData = {
                 form: { id: formId, title: formConfig.form_name },
-                questions: [
-                    { id: 'q1', text: 'Ваш Discord ID' },
-                    { id: 'q2', text: 'Ваше имя' },
-                    { id: 'q3', text: 'Сообщение' }
-                ],
                 answers: [
                     { question_id: 'q1', text: '123456789012345678' },
                     { question_id: 'q2', text: 'Тестовый пользователь' },
-                    { question_id: 'q3', text: 'Это тестовое сообщение из панели управления' }
+                    { question_id: 'q3', text: '25 лет' },
+                    { question_id: 'q4', text: 'Это тестовый пользователь для проверки системы' },
+                    { question_id: 'q5', text: 'Хочу протестировать работу вебхуков' }
                 ]
             };
 
-            sendDiscordMessage(formConfig, testData.form, testData.questions, testData.answers)
+            sendDiscordMessage(formConfig, testData.form, testData.answers)
                 .then(() => {
                     logRequest(formId, 'TEST', 'Тестовое сообщение отправлено');
                     res.json({ status: 'success', message: 'Тестовое сообщение отправлено в Discord' });
@@ -2143,8 +2131,9 @@ app.get('/health', (req, res) => {
     res.json({ 
         status: 'healthy', 
         timestamp: new Date().toISOString(),
-        version: '4.5',
-        note: 'Поддержка JSON-RPC POST + GET + обычный POST'
+        version: '4.8-CUSTOM',
+        note: 'Кастомные названия вопросов + только ответы',
+        max_questions: MAX_QUESTIONS
     });
 });
 
@@ -2152,21 +2141,23 @@ app.get('/health', (req, res) => {
 initializeDatabase().then(database => {
     db = database;
     
-    // Запуск сервера
     app.listen(PORT, '0.0.0.0', () => {
         console.log(`
 ✨ 🚀 СЕРВЕР ЯНДЕКС ФОРМЫ → DISCORD ЗАПУЩЕН! ✨
 
 📍 Порт: ${PORT}
 📊 Админка: http://localhost:${PORT}/admin
-🌐 Доступ извне: http://95.164.93.95:${PORT}/admin
+🌐 Доступ извне: http://ваш_сервер:${PORT}/admin
 🔐 Логин: admin / admin123
 
-🎉 ОСНОВНЫЕ ВОЗМОЖНОСТИ ВЕРСИИ 4.5:
-✅ ПОДДЕРЖКА JSON-RPC POST (Яндекс Формы)
-✅ ПОДДЕРЖКА GET ЗАПРОСОВ
-✅ ПОДДЕРЖКА ОБЫЧНЫХ POST ЗАПРОСОВ
-✅ УМНЫЕ УПОМИНАНИЯ: пользователь в сообщении, роль сверху
+🎉 ОСНОВНЫЕ ВОЗМОЖНОСТИ ВЕРСИИ 4.8-CUSTOM:
+✅ КАСТОМНЫЕ НАЗВАНИЯ ВОПРОСОВ (задаются в админке)
+✅ НЕ ТРЕБУЕТСЯ ПЕРЕДАЧА ВОПРОСОВ ИЗ ФОРМЫ
+✅ ПЕРВЫЙ ВОПРОС: "Discord ID" для упоминаний
+✅ ОГРАНИЧЕНИЕ: ${MAX_QUESTIONS} ВОПРОСОВ
+✅ ФУТЕР "GTA5RP LAMESA"
+✅ ПОДДЕРЖКА JSON-RPC POST
+✅ УМНЫЕ УПОМИНАНИЯ
 🔐 БЕЗОПАСНАЯ АУТЕНТИФИКАЦИЯ
 
 ⚡ СЕРВЕР ГОТОВ К РАБОТЕ!
@@ -2179,7 +2170,6 @@ initializeDatabase().then(database => {
     process.exit(1);
 });
 
-// Обработка graceful shutdown
 process.on('SIGINT', async () => {
     console.log('\n📴 Завершение работы сервера...');
     await logRequest('SYSTEM', 'SHUTDOWN', 'Сервер остановлен');
