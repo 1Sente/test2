@@ -28,8 +28,9 @@ app.use(session({
 }));
 
 // Конфигурация
-const DB_DIR = path.join(__dirname, 'data');
-const DB_FILE = path.join(DB_DIR, 'database.db');
+const DB_DIR = path.join(__dirname, '..'); // База данных на директорию выше
+const DB_FILE = path.join(DB_DIR, 'yandex_forms_discord.db'); // Новое имя файла
+const BACKUP_DIR = path.join(DB_DIR, 'backups');
 const SALT_ROUNDS = 12;
 const MAX_QUESTIONS = 20;
 
@@ -37,6 +38,7 @@ const MAX_QUESTIONS = 20;
 async function createDirectories() {
     try {
         await fs.mkdir(DB_DIR, { recursive: true });
+        await fs.mkdir(BACKUP_DIR, { recursive: true });
         await fs.mkdir(path.join(__dirname, 'config'), { recursive: true });
         await fs.mkdir(path.join(__dirname, 'logs'), { recursive: true });
         console.log('✅ Директории созданы');
@@ -734,7 +736,7 @@ const LOGIN_HTML = `
 </html>
 `;
 
-// HTML админки с расширенными настройками
+// HTML админки с расширенными настройками и резервным копированием
 const ADMIN_HTML = `
 <!DOCTYPE html>
 <html lang="ru">
@@ -1076,14 +1078,6 @@ const ADMIN_HTML = `
             margin: 1rem 0;
         }
 
-        .config-section h3 {
-            margin-bottom: 1rem;
-            color: white;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
         .color-preview {
             width: 20px;
             height: 20px;
@@ -1238,6 +1232,55 @@ const ADMIN_HTML = `
                 grid-template-columns: 1fr;
             }
         }
+
+        .backup-section {
+            background: #2f3136;
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin: 1rem 0;
+            border: 1px solid var(--primary);
+        }
+
+        .backup-actions {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+
+        @media (max-width: 768px) {
+            .backup-actions {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .backup-file-list {
+            background: #36393f;
+            border-radius: 4px;
+            padding: 1rem;
+            margin-top: 1rem;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        .backup-file-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px;
+            background: #40444b;
+            margin-bottom: 8px;
+            border-radius: 4px;
+        }
+
+        .backup-file-info {
+            flex: 1;
+        }
+
+        .backup-file-actions {
+            display: flex;
+            gap: 8px;
+        }
     </style>
 </head>
 <body>
@@ -1245,7 +1288,7 @@ const ADMIN_HTML = `
         <div class="header-bar">
             <div class="header">
                 <h1><i class="fab fa-discord"></i> Яндекс Формы → Discord</h1>
-                <p>Расширенные настройки: несколько Discord ID + условные упоминания</p>
+                <p>Расширенные настройки + Резервное копирование</p>
             </div>
             <div class="user-info">
                 <span>Вы вошли как: <strong id="username">admin</strong></span>
@@ -1276,7 +1319,7 @@ const ADMIN_HTML = `
             <h4><i class="fas fa-info-circle"></i> Расширенная логика работы</h4>
             <p><strong>Несколько Discord ID:</strong> можно указать несколько полей для упоминания разных пользователей</p>
             <p><strong>Условные упоминания:</strong> тегить разные роли в зависимости от ответов в форме</p>
-            <p><strong>Гибкие настройки:</strong> для каждой формы можно настроить индивидуальное поведение</p>
+            <p><strong>Резервное копирование:</strong> экспорт и импорт всех данных через браузер</p>
             <p><strong>Ограничение:</strong> до ${MAX_QUESTIONS} вопросов</p>
         </div>
 
@@ -1284,6 +1327,7 @@ const ADMIN_HTML = `
             <div class="tabs">
                 <div class="tab active" onclick="showTab('manage')"><i class="fas fa-cog"></i> Управление формами</div>
                 <div class="tab" onclick="showTab('webhook')"><i class="fas fa-link"></i> Webhook URL</div>
+                <div class="tab" onclick="showTab('backup')"><i class="fas fa-database"></i> Резервное копирование</div>
                 <div class="tab" onclick="showTab('logs')"><i class="fas fa-history"></i> История запросов</div>
             </div>
 
@@ -1397,6 +1441,58 @@ const ADMIN_HTML = `
                         </div>
                         <p><strong>Важно:</strong> Используйте фильтр JSON для переменной <code>answers</code></p>
                         <p><strong>Ограничение:</strong> максимум ${MAX_QUESTIONS} вопросов</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Вкладка резервного копирования -->
+            <div id="backup" class="tab-content">
+                <div class="discord-card">
+                    <h2><i class="fas fa-database"></i> Резервное копирование базы данных</h2>
+                    <p>Экспортируйте и импортируйте все данные системы через браузер</p>
+                    
+                    <div class="backup-section">
+                        <h3><i class="fas fa-download"></i> Экспорт данных</h3>
+                        <p>Скачайте полную резервную копию всех форм, настроек и логов</p>
+                        <div class="backup-actions">
+                            <button onclick="exportBackup()" class="btn btn-success">
+                                <i class="fas fa-file-export"></i> Экспорт в JSON
+                            </button>
+                            <button onclick="createAutoBackup()" class="btn btn-secondary">
+                                <i class="fas fa-plus"></i> Создать автоматический бэкап
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="backup-section">
+                        <h3><i class="fas fa-upload"></i> Импорт данных</h3>
+                        <p>Восстановите систему из ранее созданной резервной копии</p>
+                        <div class="form-group">
+                            <label for="backupFile"><i class="fas fa-file-import"></i> Выберите файл резервной копии (.json)</label>
+                            <input type="file" id="backupFile" accept=".json">
+                        </div>
+                        <button onclick="importBackup()" class="btn btn-warning btn-block">
+                            <i class="fas fa-file-import"></i> Импортировать резервную копию
+                        </button>
+                    </div>
+
+                    <div class="backup-section">
+                        <h3><i class="fas fa-history"></i> Автоматические бэкапы</h3>
+                        <p>Список созданных автоматических резервных копий</p>
+                        <div id="backupList" class="backup-file-list">
+                            Загрузка списка бэкапов...
+                        </div>
+                        <button onclick="loadBackupList()" class="btn btn-secondary" style="margin-top: 15px;">
+                            <i class="fas fa-sync"></i> Обновить список
+                        </button>
+                    </div>
+
+                    <div class="info-box">
+                        <h4><i class="fas fa-info-circle"></i> Информация о резервном копировании</h4>
+                        <p><strong>Экспорт в JSON:</strong> Создает файл со всеми данными системы</p>
+                        <p><strong>Автоматические бэкапы:</strong> Создаются с временной меткой в имени файла</p>
+                        <p><strong>Импорт:</strong> Полностью заменяет текущие данные на данные из резервной копии</p>
+                        <p><strong>Внимание:</strong> Импорт перезапишет все текущие данные!</p>
                     </div>
                 </div>
             </div>
@@ -1766,14 +1862,23 @@ const ADMIN_HTML = `
             updatePreview();
         }
         
-        function addQuestionTitleField(title = '') {
+        function addQuestionTitleField(index = '', title = '') {
             const container = document.getElementById('questionTitlesContainer');
-            const index = container.children.length + 1;
+            const currentIndex = container.children.length;
+            const displayIndex = index !== '' ? parseInt(index) + 1 : currentIndex + 1;
             const fieldHTML = \`
                 <div class="question-title-item">
+                    <input type="number" 
+                           class="question-index-input"
+                           placeholder="№ вопроса"
+                           value="\${index}"
+                           min="0"
+                           max="${MAX_QUESTIONS - 1}"
+                           style="width: 80px;"
+                           oninput="updatePreview()">
                     <input type="text" 
                            class="question-title-input" 
-                           placeholder="Название вопроса \${index}" 
+                           placeholder="Название вопроса \${displayIndex}" 
                            value="\${title}"
                            oninput="updatePreview()">
                     <button type="button" class="btn btn-danger" onclick="this.parentElement.remove(); updatePreview()">
@@ -1815,14 +1920,21 @@ const ADMIN_HTML = `
             container.innerHTML = '';
             
             if (questionTitles && questionTitles.length > 0) {
-                questionTitles.forEach(title => {
-                    addQuestionTitleField(title);
-                });
+                // Если questionTitles - это массив строк (старый формат)
+                if (typeof questionTitles[0] === 'string') {
+                    questionTitles.forEach((title, index) => {
+                        addQuestionTitleField(index.toString(), title);
+                    });
+                } else {
+                    // Если questionTitles - это массив объектов (новый формат)
+                    questionTitles.forEach(item => {
+                        addQuestionTitleField(item.index, item.title);
+                    });
+                }
             } else {
                 // Добавляем поля по умолчанию
-                addQuestionTitleField('Discord ID 1');
-                addQuestionTitleField('Discord ID 2');
-                addQuestionTitleField('Дополнительная информация');
+                addQuestionTitleField('0', 'Discord ID');
+                addQuestionTitleField('1', 'Дополнительная информация');
             }
         }
         
@@ -1857,11 +1969,16 @@ const ADMIN_HTML = `
         }
         
         function getQuestionTitles() {
-            const inputs = document.querySelectorAll('.question-title-input');
+            const items = document.querySelectorAll('.question-title-item');
             const titles = [];
-            inputs.forEach(input => {
-                if (input.value.trim()) {
-                    titles.push(input.value.trim());
+            items.forEach(item => {
+                const indexInput = item.querySelector('.question-index-input');
+                const titleInput = item.querySelector('.question-title-input');
+                if (indexInput.value.trim() && titleInput.value.trim()) {
+                    titles.push({
+                        index: parseInt(indexInput.value.trim()),
+                        title: titleInput.value.trim()
+                    });
                 }
             });
             return titles;
@@ -1880,25 +1997,33 @@ const ADMIN_HTML = `
                     return;
                 }
                 
-                const config = await response.json();
+                const result = await response.json();
                 
-                document.getElementById('configTitle').value = config.title || '';
-                document.getElementById('configDescription').value = config.description || '';
-                document.getElementById('configColor').value = config.color || '#5865f2';
-                document.getElementById('configColorText').textContent = config.color || '#5865f2';
-                document.getElementById('configFooter').value = config.footer || 'GTA5RP LAMESA';
-                document.getElementById('configMentions').value = config.mentions || '';
-                
-                // Загружаем расширенные настройки
-                loadDiscordIdFields(config.discord_id_fields || [0]);
-                loadConditionalMentions(config.conditional_mentions || []);
-                loadQuestionTitles(config.question_titles || []);
-                
-                updatePreview();
-                
-                document.getElementById('configModal').style.display = 'flex';
+                if (result.status === 'success') {
+                    const config = result.config;
+                    
+                    // Заполняем основные поля
+                    document.getElementById('configTitle').value = config.title || '';
+                    document.getElementById('configDescription').value = config.description || '';
+                    document.getElementById('configColor').value = config.color || '#5865f2';
+                    document.getElementById('configColorText').textContent = config.color || '#5865f2';
+                    document.getElementById('configFooter').value = config.footer || 'GTA5RP LAMESA';
+                    document.getElementById('configMentions').value = config.mentions || '';
+                    
+                    // Загружаем расширенные настройки
+                    loadDiscordIdFields(config.discord_id_fields || [0]);
+                    loadConditionalMentions(config.conditional_mentions || []);
+                    loadQuestionTitles(config.question_titles || []);
+                    
+                    updatePreview();
+                    
+                    document.getElementById('configModal').style.display = 'flex';
+                } else {
+                    showAlert('Ошибка загрузки настроек формы', 'error');
+                }
                 
             } catch (error) {
+                console.error('Ошибка загрузки настроек:', error);
                 showAlert('Ошибка загрузки настроек формы', 'error');
             }
         }
@@ -1960,7 +2085,7 @@ const ADMIN_HTML = `
             
             loadDiscordIdFields([0]);
             loadConditionalMentions([]);
-            loadQuestionTitles(['Discord ID 1', 'Discord ID 2', 'Дополнительная информация']);
+            loadQuestionTitles([]);
             
             updatePreview();
         }
@@ -1983,30 +2108,33 @@ const ADMIN_HTML = `
             
             // Обновляем названия вопросов в превью
             const previewQuestions = document.querySelectorAll('.embed-preview .field');
+            
+            // Создаем карту вопросов для быстрого доступа
+            const questionMap = {};
+            questionTitles.forEach(item => {
+                questionMap[item.index] = item.title;
+            });
+            
+            // Обновляем превью полей
             previewQuestions.forEach((preview, index) => {
                 const nameElement = preview.querySelector('.name');
                 const valueElement = preview.querySelector('div:last-child');
                 
-                if (questionTitles[index]) {
-                    nameElement.textContent = questionTitles[index];
-                } else if (index === 0) {
-                    nameElement.textContent = 'Discord ID 1';
-                } else if (index === 1) {
-                    nameElement.textContent = 'Discord ID 2';
-                } else {
-                    nameElement.textContent = \`Вопрос \${index + 1}\`;
-                }
+                // Определяем название вопроса
+                let questionName = questionMap[index] || \`Вопрос \${index + 1}\`;
+                nameElement.textContent = questionName;
                 
-                // Обновляем значения для полей Discord ID
+                // Определяем значение для превью
                 if (discordIdFields.includes(index)) {
                     const mentionNumber = discordIdFields.indexOf(index) + 1;
                     valueElement.innerHTML = \`&lt;@\${123456789012345678 + index}&gt; 👆 Упоминание \${mentionNumber}\`;
                 } else {
-                    valueElement.textContent = \`Ответ \${index + 1}\`;
+                    valueElement.textContent = \`Ответ на вопрос "\${questionName}"\`;
                 }
             });
         }
         
+        // Добавляем обработчики событий для обновления превью
         document.getElementById('configTitle').addEventListener('input', updatePreview);
         document.getElementById('configFooter').addEventListener('input', updatePreview);
         document.getElementById('configColor').addEventListener('input', function() {
@@ -2061,6 +2189,8 @@ const ADMIN_HTML = `
             
             if (tabName === 'logs') {
                 loadLogs();
+            } else if (tabName === 'backup') {
+                loadBackupList();
             }
         }
         
@@ -2112,6 +2242,248 @@ const ADMIN_HTML = `
                 }
             } catch (error) {
                 showAlert('Ошибка при очистке логов', 'error');
+            }
+        }
+        
+        // Функции для резервного копирования
+        async function exportBackup() {
+            try {
+                const response = await fetch('/admin/backup/export', {
+                    credentials: 'include'
+                });
+                
+                if (response.status === 401) {
+                    window.location.href = '/admin/login';
+                    return;
+                }
+                
+                if (!response.ok) {
+                    throw new Error('Ошибка при экспорте');
+                }
+                
+                const blob = await response.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.style.display = 'none';
+                a.href = url;
+                a.download = \`yandex-forms-backup-\${new Date().toISOString().split('T')[0]}.json\`;
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+                document.body.removeChild(a);
+                
+                showAlert('Резервная копия успешно экспортирована!', 'success');
+            } catch (error) {
+                console.error('Ошибка экспорта:', error);
+                showAlert('Ошибка при экспорте резервной копии', 'error');
+            }
+        }
+        
+        async function createAutoBackup() {
+            try {
+                const response = await fetch('/admin/backup/create', {
+                    method: 'POST',
+                    credentials: 'include'
+                });
+                
+                if (response.status === 401) {
+                    window.location.href = '/admin/login';
+                    return;
+                }
+                
+                const result = await response.json();
+                
+                if (result.status === 'success') {
+                    showAlert('Автоматическая резервная копия создана!', 'success');
+                    loadBackupList();
+                } else {
+                    showAlert(result.message, 'error');
+                }
+            } catch (error) {
+                showAlert('Ошибка при создании резервной копии', 'error');
+            }
+        }
+        
+        async function importBackup() {
+            const fileInput = document.getElementById('backupFile');
+            if (!fileInput.files.length) {
+                showAlert('Выберите файл резервной копии', 'error');
+                return;
+            }
+            
+            if (!confirm('ВНИМАНИЕ: Это действие перезапишет все текущие данные! Продолжить?')) {
+                return;
+            }
+            
+            const formData = new FormData();
+            formData.append('backupFile', fileInput.files[0]);
+            
+            try {
+                const response = await fetch('/admin/backup/import', {
+                    method: 'POST',
+                    body: formData,
+                    credentials: 'include'
+                });
+                
+                if (response.status === 401) {
+                    window.location.href = '/admin/login';
+                    return;
+                }
+                
+                const result = await response.json();
+                
+                if (result.status === 'success') {
+                    showAlert('Резервная копия успешно импортирована!', 'success');
+                    fileInput.value = '';
+                    // Перезагружаем страницу для применения изменений
+                    setTimeout(() => {
+                        window.location.reload();
+                    }, 2000);
+                } else {
+                    showAlert(result.message, 'error');
+                }
+            } catch (error) {
+                showAlert('Ошибка при импорте резервной копии', 'error');
+            }
+        }
+        
+        async function loadBackupList() {
+            try {
+                const response = await fetch('/admin/backup/list', {
+                    credentials: 'include'
+                });
+                
+                if (response.status === 401) {
+                    window.location.href = '/admin/login';
+                    return;
+                }
+                
+                const backups = await response.json();
+                const backupList = document.getElementById('backupList');
+                
+                if (!backups || backups.length === 0) {
+                    backupList.innerHTML = '<p>Нет автоматических резервных копий</p>';
+                    return;
+                }
+                
+                backupList.innerHTML = '';
+                backups.forEach(backup => {
+                    const backupItem = document.createElement('div');
+                    backupItem.className = 'backup-file-item';
+                    backupItem.innerHTML = \`
+                        <div class="backup-file-info">
+                            <strong>\${backup.name}</strong><br>
+                            <small>Размер: \${backup.size} | Создан: \${backup.created}</small>
+                        </div>
+                        <div class="backup-file-actions">
+                            <button onclick="downloadBackup('\${backup.name}')" class="btn btn-secondary" style="padding: 6px 10px; font-size: 12px;">
+                                <i class="fas fa-download"></i>
+                            </button>
+                            <button onclick="restoreBackup('\${backup.name}')" class="btn btn-warning" style="padding: 6px 10px; font-size: 12px;">
+                                <i class="fas fa-upload"></i>
+                            </button>
+                            <button onclick="deleteBackup('\${backup.name}')" class="btn btn-danger" style="padding: 6px 10px; font-size: 12px;">
+                                <i class="fas fa-trash"></i>
+                            </button>
+                        </div>
+                    \`;
+                    backupList.appendChild(backupItem);
+                });
+            } catch (error) {
+                document.getElementById('backupList').innerHTML = 'Ошибка загрузки списка бэкапов';
+            }
+        }
+        
+        async function downloadBackup(filename) {
+            try {
+                const response = await fetch(\`/admin/backup/download/\${filename}\`, {
+                    credentials: 'include'
+                });
+                
+                if (response.status === 401) {
+                    window.location.href = '/admin/login';
+                    return;
+                }
+                
+                if (!response.ok) {
+                    throw new Error('Ошибка при скачивании');
+                }
+                
+                const blob = await response.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.style.display = 'none';
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+                document.body.removeChild(a);
+                
+                showAlert('Резервная копия скачана!', 'success');
+            } catch (error) {
+                showAlert('Ошибка при скачивании резервной копии', 'error');
+            }
+        }
+        
+        async function restoreBackup(filename) {
+            if (!confirm('ВНИМАНИЕ: Это действие перезапишет все текущие данные! Продолжить?')) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(\`/admin/backup/restore/\${filename}\`, {
+                    method: 'POST',
+                    credentials: 'include'
+                });
+                
+                if (response.status === 401) {
+                    window.location.href = '/admin/login';
+                    return;
+                }
+                
+                const result = await response.json();
+                
+                if (result.status === 'success') {
+                    showAlert('Резервная копия успешно восстановлена!', 'success');
+                    // Перезагружаем страницу для применения изменений
+                    setTimeout(() => {
+                        window.location.reload();
+                    }, 2000);
+                } else {
+                    showAlert(result.message, 'error');
+                }
+            } catch (error) {
+                showAlert('Ошибка при восстановлении резервной копии', 'error');
+            }
+        }
+        
+        async function deleteBackup(filename) {
+            if (!confirm(\`Вы уверены, что хотите удалить резервную копию "\${filename}"?\`)) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(\`/admin/backup/delete/\${filename}\`, {
+                    method: 'DELETE',
+                    credentials: 'include'
+                });
+                
+                if (response.status === 401) {
+                    window.location.href = '/admin/login';
+                    return;
+                }
+                
+                const result = await response.json();
+                
+                if (result.status === 'success') {
+                    showAlert('Резервная копия удалена!', 'success');
+                    loadBackupList();
+                } else {
+                    showAlert(result.message, 'error');
+                }
+            } catch (error) {
+                showAlert('Ошибка при удалении резервной копии', 'error');
             }
         }
         
@@ -2196,6 +2568,9 @@ const ADMIN_HTML = `
         document.addEventListener('DOMContentLoaded', function() {
             document.getElementById('webhookUrlText').textContent = window.location.origin + '/webhook/yandex-form';
             loadForms();
+            
+            // Инициализация превью при загрузке
+            updatePreview();
         });
     </script>
 </body>
@@ -2620,14 +2995,390 @@ app.post('/admin/broadcast-maintenance', requireAuth, async (req, res) => {
     }
 });
 
+// Резервное копирование - экспорт всех данных в JSON
+app.get('/admin/backup/export', requireAuth, async (req, res) => {
+    try {
+        // Получаем все данные из базы
+        const forms = await new Promise((resolve, reject) => {
+            db.all('SELECT * FROM forms', (err, rows) => {
+                if (err) reject(err);
+                else resolve(rows);
+            });
+        });
+
+        const logs = await new Promise((resolve, reject) => {
+            db.all('SELECT * FROM logs ORDER BY timestamp DESC LIMIT 1000', (err, rows) => {
+                if (err) reject(err);
+                else resolve(rows);
+            });
+        });
+
+        const users = await new Promise((resolve, reject) => {
+            db.all('SELECT id, username, created_at FROM users', (err, rows) => {
+                if (err) reject(err);
+                else resolve(rows);
+            });
+        });
+
+        const backupData = {
+            metadata: {
+                version: '2.0',
+                exportDate: new Date().toISOString(),
+                totalForms: forms.length,
+                totalLogs: logs.length,
+                totalUsers: users.length
+            },
+            forms: forms,
+            logs: logs,
+            users: users
+        };
+
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const filename = `yandex-forms-backup-${timestamp}.json`;
+
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        res.send(JSON.stringify(backupData, null, 2));
+
+        await logRequest('SYSTEM', 'BACKUP_EXPORT', 'Экспорт резервной копии');
+
+    } catch (error) {
+        console.error('❌ Ошибка экспорта резервной копии:', error);
+        await logRequest('SYSTEM', 'BACKUP_EXPORT_ERROR', error.message);
+        res.status(500).json({ status: 'error', message: 'Ошибка экспорта резервной копии' });
+    }
+});
+
+// Резервное копирование - импорт данных из JSON
+const multer = require('multer');
+const upload = multer({ dest: 'uploads/' });
+
+app.post('/admin/backup/import', requireAuth, upload.single('backupFile'), async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ status: 'error', message: 'Файл не загружен' });
+        }
+
+        const backupData = JSON.parse(await fs.readFile(req.file.path, 'utf8'));
+
+        // Начинаем транзакцию для импорта
+        db.serialize(() => {
+            db.run('BEGIN TRANSACTION');
+
+            // Очищаем текущие данные
+            db.run('DELETE FROM forms');
+            db.run('DELETE FROM logs');
+            // Пользователей не удаляем, чтобы не потерять доступ
+
+            // Импортируем формы
+            if (backupData.forms && Array.isArray(backupData.forms)) {
+                const stmt = db.prepare(`INSERT INTO forms (
+                    form_id, form_name, webhook_url, title, description, color, 
+                    footer, mentions, question_titles, discord_id_fields, conditional_mentions,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+
+                backupData.forms.forEach(form => {
+                    stmt.run([
+                        form.form_id,
+                        form.form_name,
+                        form.webhook_url,
+                        form.title || '',
+                        form.description || '',
+                        form.color || '#5865f2',
+                        form.footer || 'GTA5RP LAMESA',
+                        form.mentions || '',
+                        form.question_titles || '[]',
+                        form.discord_id_fields || '[0]',
+                        form.conditional_mentions || '[]',
+                        form.created_at || new Date().toISOString(),
+                        form.updated_at || new Date().toISOString()
+                    ]);
+                });
+
+                stmt.finalize();
+            }
+
+            // Импортируем логи
+            if (backupData.logs && Array.isArray(backupData.logs)) {
+                const stmt = db.prepare('INSERT INTO logs (form_id, status, message, timestamp) VALUES (?, ?, ?, ?)');
+                
+                backupData.logs.forEach(log => {
+                    stmt.run([
+                        log.form_id,
+                        log.status,
+                        log.message,
+                        log.timestamp || new Date().toISOString()
+                    ]);
+                });
+
+                stmt.finalize();
+            }
+
+            db.run('COMMIT', async (err) => {
+                if (err) {
+                    console.error('Ошибка импорта резервной копии:', err);
+                    db.run('ROLLBACK');
+                    await fs.unlink(req.file.path);
+                    await logRequest('SYSTEM', 'BACKUP_IMPORT_ERROR', err.message);
+                    return res.status(500).json({ status: 'error', message: 'Ошибка импорта резервной копии' });
+                }
+
+                // Удаляем временный файл
+                await fs.unlink(req.file.path);
+
+                await logRequest('SYSTEM', 'BACKUP_IMPORT', `Импортировано ${backupData.forms?.length || 0} форм и ${backupData.logs?.length || 0} логов`);
+                
+                res.json({ 
+                    status: 'success', 
+                    message: `Резервная копия успешно импортирована. Формы: ${backupData.forms?.length || 0}, Логи: ${backupData.logs?.length || 0}` 
+                });
+            });
+        });
+
+    } catch (error) {
+        console.error('❌ Ошибка импорта резервной копии:', error);
+        if (req.file) {
+            await fs.unlink(req.file.path).catch(console.error);
+        }
+        await logRequest('SYSTEM', 'BACKUP_IMPORT_ERROR', error.message);
+        res.status(500).json({ status: 'error', message: 'Ошибка импорта резервной копии' });
+    }
+});
+
+// Создание автоматической резервной копии
+app.post('/admin/backup/create', requireAuth, async (req, res) => {
+    try {
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const backupPath = path.join(BACKUP_DIR, `auto-backup-${timestamp}.json`);
+
+        // Получаем все данные
+        const forms = await new Promise((resolve, reject) => {
+            db.all('SELECT * FROM forms', (err, rows) => {
+                if (err) reject(err);
+                else resolve(rows);
+            });
+        });
+
+        const logs = await new Promise((resolve, reject) => {
+            db.all('SELECT * FROM logs ORDER BY timestamp DESC LIMIT 1000', (err, rows) => {
+                if (err) reject(err);
+                else resolve(rows);
+            });
+        });
+
+        const backupData = {
+            metadata: {
+                version: '2.0',
+                exportDate: new Date().toISOString(),
+                type: 'auto-backup',
+                totalForms: forms.length,
+                totalLogs: logs.length
+            },
+            forms: forms,
+            logs: logs
+        };
+
+        await fs.writeFile(backupPath, JSON.stringify(backupData, null, 2));
+
+        await logRequest('SYSTEM', 'BACKUP_CREATED', `Создан автоматический бэкап: ${path.basename(backupPath)}`);
+        
+        res.json({ 
+            status: 'success', 
+            message: `Автоматическая резервная копия создана: ${path.basename(backupPath)}`,
+            filename: path.basename(backupPath)
+        });
+
+    } catch (error) {
+        console.error('❌ Ошибка создания автоматической резервной копии:', error);
+        await logRequest('SYSTEM', 'BACKUP_CREATE_ERROR', error.message);
+        res.status(500).json({ status: 'error', message: 'Ошибка создания резервной копии' });
+    }
+});
+
+// Получение списка резервных копий
+app.get('/admin/backup/list', requireAuth, async (req, res) => {
+    try {
+        const files = await fs.readdir(BACKUP_DIR);
+        const backups = [];
+
+        for (const file of files) {
+            if (file.endsWith('.json')) {
+                const filePath = path.join(BACKUP_DIR, file);
+                const stats = await fs.stat(filePath);
+                
+                backups.push({
+                    name: file,
+                    size: formatFileSize(stats.size),
+                    created: stats.birthtime.toLocaleString('ru-RU'),
+                    path: filePath
+                });
+            }
+        }
+
+        // Сортируем по дате создания (новые сначала)
+        backups.sort((a, b) => new Date(b.created) - new Date(a.created));
+
+        res.json(backups);
+
+    } catch (error) {
+        console.error('❌ Ошибка получения списка бэкапов:', error);
+        res.status(500).json({ status: 'error', message: 'Ошибка получения списка резервных копий' });
+    }
+});
+
+// Скачивание конкретной резервной копии
+app.get('/admin/backup/download/:filename', requireAuth, async (req, res) => {
+    try {
+        const filename = req.params.filename;
+        const filePath = path.join(BACKUP_DIR, filename);
+
+        // Проверяем существование файла
+        try {
+            await fs.access(filePath);
+        } catch {
+            return res.status(404).json({ status: 'error', message: 'Файл не найден' });
+        }
+
+        res.download(filePath, filename, (err) => {
+            if (err) {
+                console.error('Ошибка скачивания файла:', err);
+                res.status(500).json({ status: 'error', message: 'Ошибка скачивания файла' });
+            }
+        });
+
+        await logRequest('SYSTEM', 'BACKUP_DOWNLOAD', `Скачан бэкап: ${filename}`);
+
+    } catch (error) {
+        console.error('❌ Ошибка скачивания резервной копии:', error);
+        res.status(500).json({ status: 'error', message: 'Ошибка скачивания резервной копии' });
+    }
+});
+
+// Восстановление из конкретной резервной копии
+app.post('/admin/backup/restore/:filename', requireAuth, async (req, res) => {
+    try {
+        const filename = req.params.filename;
+        const filePath = path.join(BACKUP_DIR, filename);
+
+        // Читаем файл резервной копии
+        const backupData = JSON.parse(await fs.readFile(filePath, 'utf8'));
+
+        // Начинаем транзакцию для импорта
+        db.serialize(() => {
+            db.run('BEGIN TRANSACTION');
+
+            // Очищаем текущие данные
+            db.run('DELETE FROM forms');
+            db.run('DELETE FROM logs');
+
+            // Импортируем формы
+            if (backupData.forms && Array.isArray(backupData.forms)) {
+                const stmt = db.prepare(`INSERT INTO forms (
+                    form_id, form_name, webhook_url, title, description, color, 
+                    footer, mentions, question_titles, discord_id_fields, conditional_mentions,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+
+                backupData.forms.forEach(form => {
+                    stmt.run([
+                        form.form_id,
+                        form.form_name,
+                        form.webhook_url,
+                        form.title || '',
+                        form.description || '',
+                        form.color || '#5865f2',
+                        form.footer || 'GTA5RP LAMESA',
+                        form.mentions || '',
+                        form.question_titles || '[]',
+                        form.discord_id_fields || '[0]',
+                        form.conditional_mentions || '[]',
+                        form.created_at || new Date().toISOString(),
+                        form.updated_at || new Date().toISOString()
+                    ]);
+                });
+
+                stmt.finalize();
+            }
+
+            // Импортируем логи
+            if (backupData.logs && Array.isArray(backupData.logs)) {
+                const stmt = db.prepare('INSERT INTO logs (form_id, status, message, timestamp) VALUES (?, ?, ?, ?)');
+                
+                backupData.logs.forEach(log => {
+                    stmt.run([
+                        log.form_id,
+                        log.status,
+                        log.message,
+                        log.timestamp || new Date().toISOString()
+                    ]);
+                });
+
+                stmt.finalize();
+            }
+
+            db.run('COMMIT', async (err) => {
+                if (err) {
+                    console.error('Ошибка восстановления из резервной копии:', err);
+                    db.run('ROLLBACK');
+                    await logRequest('SYSTEM', 'BACKUP_RESTORE_ERROR', err.message);
+                    return res.status(500).json({ status: 'error', message: 'Ошибка восстановления из резервной копии' });
+                }
+
+                await logRequest('SYSTEM', 'BACKUP_RESTORED', `Восстановлен бэкап: ${filename}`);
+                
+                res.json({ 
+                    status: 'success', 
+                    message: `Резервная копия успешно восстановлена. Формы: ${backupData.forms?.length || 0}, Логи: ${backupData.logs?.length || 0}` 
+                });
+            });
+        });
+
+    } catch (error) {
+        console.error('❌ Ошибка восстановления из резервной копии:', error);
+        await logRequest('SYSTEM', 'BACKUP_RESTORE_ERROR', error.message);
+        res.status(500).json({ status: 'error', message: 'Ошибка восстановления из резервной копии' });
+    }
+});
+
+// Удаление резервной копии
+app.delete('/admin/backup/delete/:filename', requireAuth, async (req, res) => {
+    try {
+        const filename = req.params.filename;
+        const filePath = path.join(BACKUP_DIR, filename);
+
+        await fs.unlink(filePath);
+
+        await logRequest('SYSTEM', 'BACKUP_DELETED', `Удален бэкап: ${filename}`);
+        
+        res.json({ status: 'success', message: 'Резервная копия удалена' });
+
+    } catch (error) {
+        console.error('❌ Ошибка удаления резервной копии:', error);
+        await logRequest('SYSTEM', 'BACKUP_DELETE_ERROR', error.message);
+        res.status(500).json({ status: 'error', message: 'Ошибка удаления резервной копии' });
+    }
+});
+
+// Вспомогательная функция для форматирования размера файла
+function formatFileSize(bytes) {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
 // Health check
 app.get('/health', (req, res) => {
     res.json({ 
         status: 'healthy', 
         timestamp: new Date().toISOString(),
-        version: '5.0-ADVANCED',
-        note: 'Расширенные настройки: несколько Discord ID + условные упоминания',
-        max_questions: MAX_QUESTIONS
+        version: '5.0-ADVANCED-BACKUP',
+        note: 'Расширенные настройки + Резервное копирование',
+        max_questions: MAX_QUESTIONS,
+        database_path: DB_FILE,
+        backup_path: BACKUP_DIR
     });
 });
 
@@ -2644,7 +3395,7 @@ initializeDatabase().then(database => {
 🌐 Доступ извне: http://ваш_сервер:${PORT}/admin
 🔐 Логин: admin / admin123
 
-🎉 РАСШИРЕННЫЕ ВОЗМОЖНОСТИ ВЕРСИИ 5.0-ADVANCED:
+🎉 РАСШИРЕННЫЕ ВОЗМОЖНОСТИ ВЕРСИИ 5.0-ADVANCED-BACKUP:
 ✅ НЕСКОЛЬКО DISCORD ID - можно указать несколько полей для упоминания
 ✅ УСЛОВНЫЕ УПОМИНАНИЯ - тегить разные роли в зависимости от ответов
 ✅ ГИБКИЕ НАСТРОЙКИ - индивидуальное поведение для каждой формы
@@ -2656,7 +3407,13 @@ initializeDatabase().then(database => {
 ✅ УМНЫЕ УПОМИНАНИЯ
 ✅ СОХРАНЕНИЕ НАСТРОЕК ФОРМ
 ✅ РАССЫЛКА ТЕХНИЧЕСКИХ УВЕДОМЛЕНИЙ
+✅ РЕЗЕРВНОЕ КОПИРОВАНИЕ - экспорт/импорт через браузер
+✅ АВТОМАТИЧЕСКИЕ БЭКАПЫ
 🔐 БЕЗОПАСНАЯ АУТЕНТИФИКАЦИЯ
+
+📁 ПУТИ:
+База данных: ${DB_FILE}
+Резервные копии: ${BACKUP_DIR}
 
 ⚡ СЕРВЕР ГОТОВ К РАБОТЕ!
 
