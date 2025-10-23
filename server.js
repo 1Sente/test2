@@ -143,6 +143,11 @@ function requireAuth(req, res, next) {
 
 // Функция логирования
 async function logRequest(formId, status, message = '') {
+    if (!db) {
+        console.error('❌ База данных не инициализирована для логирования');
+        return;
+    }
+    
     return new Promise((resolve, reject) => {
         db.run(
             `INSERT INTO logs (form_id, status, message) VALUES (?, ?, ?)`,
@@ -166,6 +171,14 @@ function isValidWebhookUrl(url) {
 
 // Функция отправки сообщения в Discord
 async function sendDiscordMessage(formConfig, formData, answers) {
+    if (!formConfig || !formConfig.webhook_url) {
+        throw new Error('Неверная конфигурация формы');
+    }
+
+    if (!isValidWebhookUrl(formConfig.webhook_url)) {
+        throw new Error('Неверный URL вебхука Discord');
+    }
+
     // Получаем поля с Discord ID
     let discordIdFields = [0]; // по умолчанию первый вопрос
     try {
@@ -287,7 +300,7 @@ async function sendDiscordMessage(formConfig, formData, answers) {
                 if (discordId.length >= 17) {
                     embed.fields.push({
                         name: questionText,
-                        value: `<@${discordId}>` + (discordIdFields.length > 1 ? ` 👆 Упоминание ${discordIdFields.indexOf(index) + 1}` : ' 👆 Упоминание'),
+                        value: `<@${discordId}>`,
                         inline: false
                     });
                 } else {
@@ -350,44 +363,58 @@ async function sendDiscordMessage(formConfig, formData, answers) {
 // Функция для парсинга ответов
 function parseYandexFormAnswers(answersData) {
     try {
+        if (!answersData) return [];
+
+        // Если это уже массив ответов в правильном формате
         if (Array.isArray(answersData)) {
-            return answersData;
+            return answersData.map((answer, index) => ({
+                question_id: answer.question_id || `q${index}`,
+                text: String(answer.text || answer.value || answer.answer || '')
+            }));
         }
 
         if (typeof answersData === 'string') {
-            const parsed = JSON.parse(answersData);
-            return parseYandexFormAnswers(parsed);
+            try {
+                const parsed = JSON.parse(answersData);
+                return parseYandexFormAnswers(parsed);
+            } catch (e) {
+                // Если это просто строка, возвращаем как единственный ответ
+                return [{ question_id: 'q0', text: answersData }];
+            }
         }
 
-        if (answersData && answersData.answer && answersData.answer.data) {
-            const answers = [];
-            const data = answersData.answer.data;
-            
-            Object.keys(data).forEach(key => {
-                const field = data[key];
-                if (field && field.value !== undefined) {
-                    let answerText = field.value;
-                    
-                    if (Array.isArray(answerText)) {
-                        answerText = answerText.map(item => item.text || item).join(', ');
-                    } else if (typeof answerText === 'object') {
-                        answerText = JSON.stringify(answerText);
-                    }
-                    
-                    answers.push({
-                        question_id: key,
-                        text: String(answerText)
-                    });
-                }
-            });
-            
-            return answers;
-        }
-
+        // Обработка различных форматов Яндекс Форм
         if (answersData && typeof answersData === 'object') {
+            // Формат: { answer: { data: { field1: { value: ... }, field2: { value: ... } } } }
+            if (answersData.answer && answersData.answer.data) {
+                const answers = [];
+                const data = answersData.answer.data;
+                
+                Object.keys(data).forEach(key => {
+                    const field = data[key];
+                    if (field && field.value !== undefined && field.value !== null) {
+                        let answerText = field.value;
+                        
+                        if (Array.isArray(answerText)) {
+                            answerText = answerText.map(item => item.text || item).join(', ');
+                        } else if (typeof answerText === 'object') {
+                            answerText = JSON.stringify(answerText);
+                        }
+                        
+                        answers.push({
+                            question_id: key,
+                            text: String(answerText)
+                        });
+                    }
+                });
+                
+                return answers;
+            }
+            
+            // Формат: { field1: "value1", field2: "value2" }
             const answers = [];
             Object.keys(answersData).forEach(key => {
-                if (key !== 'formId' && key !== 'formTitle') {
+                if (!['formId', 'form_id', 'formTitle', 'form_title', 'answers'].includes(key)) {
                     answers.push({
                         question_id: key,
                         text: String(answersData[key])
@@ -408,11 +435,21 @@ let db;
 
 // POST вебхук для Яндекс Форм
 app.post('/webhook/yandex-form', async (req, res) => {
+    let requestBody;
+    
     try {
         console.log('📨 Получен POST запрос от Яндекс Формы');
         
-        let requestBody = req.body;
+        requestBody = req.body;
         
+        if (!requestBody) {
+            await logRequest('UNKNOWN', 'ERROR', 'Пустое тело запроса');
+            return res.status(400).json({
+                status: 'error',
+                message: 'Пустое тело запроса'
+            });
+        }
+
         let formId, formTitle, answers;
 
         // Обработка JSON-RPC запроса
@@ -581,7 +618,7 @@ app.post('/webhook/yandex-form', async (req, res) => {
         );
 
     } catch (error) {
-        console.error('❌ Ошибка обработка POST вебхука:', error);
+        console.error('❌ Ошибка обработки POST вебхука:', error);
         logRequest('UNKNOWN', 'ERROR', error.message);
         res.status(500).json({
             status: 'error',
@@ -1644,11 +1681,11 @@ const ADMIN_HTML = `
                     <div class="title" id="previewTitle">Заголовок сообщения</div>
                     <div class="field">
                         <div class="name" id="previewQuestion1">Discord ID 1</div>
-                        <div>&lt;@123456789012345678&gt; 👆 Упоминание 1</div>
+                        <div>&lt;@123456789012345678&gt;</div>
                     </div>
                     <div class="field">
                         <div class="name" id="previewQuestion2">Discord ID 2</div>
-                        <div>&lt;@987654321098765432&gt; 👆 Упоминание 2</div>
+                        <div>&lt;@987654321098765432&gt;</div>
                     </div>
                     <div class="field">
                         <div class="name" id="previewQuestion3">Вопрос 3</div>
@@ -2152,8 +2189,7 @@ const ADMIN_HTML = `
                 
                 // Определяем значение для превью
                 if (discordIdFields.includes(index)) {
-                    const mentionNumber = discordIdFields.indexOf(index) + 1;
-                    valueElement.innerHTML = \`&lt;@\${123456789012345678 + index}&gt; 👆 Упоминание \${mentionNumber}\`;
+                    valueElement.innerHTML = \`&lt;@\${123456789012345678 + index}&gt;\`;
                 } else {
                     valueElement.textContent = \`Ответ на вопрос "\${questionName}"\`;
                 }
@@ -2547,7 +2583,7 @@ const ADMIN_HTML = `
                 
                 if (result.status === 'success') {
                     let resultsHTML = '';
-                    result.results.forEach((formResult, index) => {
+                    result.results.forEach((formResult, index) {
                         const statusIcon = formResult.success ? '✅' : '❌';
                         resultsHTML += \`\${statusIcon} \${formResult.formName}: \${formResult.message}<br>\`;
                     });
@@ -2615,8 +2651,13 @@ app.get('/admin/login', (req, res) => {
 app.post('/admin/login', (req, res) => {
     const { username, password } = req.body;
     
+    if (!db) {
+        return res.status(500).json({ status: 'error', message: 'База данных не инициализирована' });
+    }
+    
     db.get('SELECT * FROM users WHERE username = ?', [username], (err, user) => {
         if (err) {
+            console.error('Ошибка базы данных при входе:', err);
             return res.status(500).json({ status: 'error', message: 'Ошибка базы данных' });
         }
         
@@ -2626,6 +2667,7 @@ app.post('/admin/login', (req, res) => {
         
         bcrypt.compare(password, user.password_hash, (err, result) => {
             if (err) {
+                console.error('Ошибка проверки пароля:', err);
                 return res.status(500).json({ status: 'error', message: 'Ошибка проверки пароля' });
             }
             
