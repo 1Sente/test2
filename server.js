@@ -490,7 +490,7 @@ app.post('/webhook/yandex-form', async (req, res) => {
         );
 
     } catch (error) {
-        console.error('❌ Ошибка обработки POST вебхука:', error);
+        console.error('❌ Ошибка обработка POST вебхука:', error);
         logRequest('UNKNOWN', 'ERROR', error.message);
         res.status(500).json({
             status: 'error',
@@ -1116,6 +1116,28 @@ const ADMIN_HTML = `
         .question-title-item .btn {
             padding: 8px 12px;
         }
+
+        .maintenance-modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.8);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+        }
+        
+        .maintenance-content {
+            background: #36393f;
+            border-radius: 8px;
+            padding: 2rem;
+            max-width: 500px;
+            width: 95%;
+            border: 1px solid #40444b;
+        }
     </style>
 </head>
 <body>
@@ -1205,6 +1227,13 @@ const ADMIN_HTML = `
                             </select>
                             <button onclick="testWebhook()" class="btn btn-secondary btn-block" style="margin-top: 10px;">
                                 <i class="fas fa-vial"></i> Тестовое сообщение
+                            </button>
+                        </div>
+
+                        <div class="form-group">
+                            <label>Уведомления</label>
+                            <button onclick="showMaintenanceModal()" class="btn btn-warning btn-block">
+                                <i class="fas fa-tools"></i> Уведомление о тех. работах
                             </button>
                         </div>
 
@@ -1386,6 +1415,38 @@ const ADMIN_HTML = `
                 <button onclick="resetFormConfig()" class="btn btn-secondary">
                     <i class="fas fa-undo"></i> Сбросить
                 </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Модальное окно тех работ -->
+    <div id="maintenanceModal" class="maintenance-modal">
+        <div class="maintenance-content">
+            <h2><i class="fas fa-tools"></i> Уведомление о технических работах</h2>
+            <p>Это сообщение будет отправлено на ВСЕ зарегистрированные вебхуки Discord.</p>
+            
+            <div class="form-group">
+                <label for="maintenanceMessage">Сообщение</label>
+                <textarea id="maintenanceMessage" rows="4" style="width: 100%; padding: 12px; background: #40444b; border: 1px solid #40444b; border-radius: 4px; color: #dcddde;">
+⚡ Проводятся технические работы
+В настоящее время проводятся технические работы. Пожалуйста, не заполняйте формы до окончания работ.
+
+Приносим извинения за неудобства.
+                </textarea>
+            </div>
+
+            <div style="display: flex; gap: 10px; margin-top: 1.5rem;">
+                <button onclick="sendMaintenanceMessage()" class="btn btn-warning">
+                    <i class="fas fa-paper-plane"></i> Отправить всем
+                </button>
+                <button onclick="hideMaintenanceModal()" class="btn btn-secondary">
+                    <i class="fas fa-times"></i> Отмена
+                </button>
+            </div>
+
+            <div id="maintenanceResults" style="margin-top: 1rem; max-height: 200px; overflow-y: auto; display: none;">
+                <h4>Результаты отправки:</h4>
+                <div id="maintenanceResultsContent" style="font-family: monospace; font-size: 12px;"></div>
             </div>
         </div>
     </div>
@@ -1786,6 +1847,57 @@ const ADMIN_HTML = `
             }
         }
         
+        function showMaintenanceModal() {
+            document.getElementById('maintenanceModal').style.display = 'flex';
+            document.getElementById('maintenanceResults').style.display = 'none';
+        }
+
+        function hideMaintenanceModal() {
+            document.getElementById('maintenanceModal').style.display = 'none';
+        }
+
+        async function sendMaintenanceMessage() {
+            const message = document.getElementById('maintenanceMessage').value;
+            const resultsDiv = document.getElementById('maintenanceResultsContent');
+            const resultsContainer = document.getElementById('maintenanceResults');
+            
+            resultsDiv.innerHTML = '🔄 Отправка сообщений...';
+            resultsContainer.style.display = 'block';
+
+            try {
+                const response = await fetch('/admin/broadcast-maintenance', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message }),
+                    credentials: 'include'
+                });
+
+                if (response.status === 401) {
+                    window.location.href = '/admin/login';
+                    return;
+                }
+
+                const result = await response.json();
+                
+                if (result.status === 'success') {
+                    let resultsHTML = '';
+                    result.results.forEach((formResult, index) => {
+                        const statusIcon = formResult.success ? '✅' : '❌';
+                        resultsHTML += \`\${statusIcon} \${formResult.formName}: \${formResult.message}<br>\`;
+                    });
+                    
+                    resultsDiv.innerHTML = resultsHTML;
+                    showAlert(\`Сообщение отправлено на \${result.successCount} из \${result.totalCount} вебхуков\`, 'success');
+                } else {
+                    resultsDiv.innerHTML = \`❌ Ошибка: \${result.message}\`;
+                    showAlert(result.message, 'error');
+                }
+            } catch (error) {
+                resultsDiv.innerHTML = '❌ Ошибка соединения';
+                showAlert('Ошибка при отправке сообщений', 'error');
+            }
+        }
+        
         async function logout() {
             try {
                 const response = await fetch('/admin/logout', { 
@@ -2126,6 +2238,110 @@ app.delete('/admin/logs', requireAuth, (req, res) => {
     });
 });
 
+// Новый маршрут для массовой рассылки сообщений о техработах
+app.post('/admin/broadcast-maintenance', requireAuth, async (req, res) => {
+    try {
+        const { message } = req.body;
+        
+        if (!message || message.trim().length === 0) {
+            return res.status(400).json({ 
+                status: 'error', 
+                message: 'Сообщение не может быть пустым' 
+            });
+        }
+
+        // Получаем все зарегистрированные формы
+        const forms = await new Promise((resolve, reject) => {
+            db.all('SELECT form_id, form_name, webhook_url FROM forms', (err, rows) => {
+                if (err) {
+                    reject(err);
+                } else {
+                    resolve(rows);
+                }
+            });
+        });
+
+        if (forms.length === 0) {
+            return res.json({
+                status: 'success',
+                message: 'Нет зарегистрированных форм для отправки',
+                results: [],
+                successCount: 0,
+                totalCount: 0
+            });
+        }
+
+        const results = [];
+        let successCount = 0;
+
+        // Отправляем сообщение на каждый вебхук
+        for (const form of forms) {
+            try {
+                const embed = {
+                    title: "⚠️ Технические работы",
+                    description: message,
+                    color: 16776960, // желтый цвет
+                    timestamp: new Date().toISOString(),
+                    footer: { text: "GTA5RP LAMESA - Системное уведомление" }
+                };
+
+                const payload = {
+                    embeds: [embed]
+                };
+
+                await axios.post(form.webhook_url, payload);
+                
+                results.push({
+                    formId: form.form_id,
+                    formName: form.form_name,
+                    success: true,
+                    message: 'Успешно отправлено'
+                });
+                successCount++;
+
+                // Логируем успешную отправку
+                await logRequest(form.form_id, 'MAINTENANCE_SENT', 'Уведомление о техработах отправлено');
+
+                // Небольшая задержка чтобы не спамить Discord
+                await new Promise(resolve => setTimeout(resolve, 100));
+
+            } catch (error) {
+                console.error(`❌ Ошибка отправки для формы ${form.form_name}:`, error.message);
+                
+                results.push({
+                    formId: form.form_id,
+                    formName: form.form_name,
+                    success: false,
+                    message: `Ошибка: ${error.response?.data?.message || error.message}`
+                });
+
+                // Логируем ошибку
+                await logRequest(form.form_id, 'MAINTENANCE_ERROR', error.message);
+            }
+        }
+
+        // Логируем общий результат
+        await logRequest('SYSTEM', 'MAINTENANCE_BROADCAST', 
+            `Отправлено ${successCount}/${forms.length} уведомлений о техработах`);
+
+        res.json({
+            status: 'success',
+            message: `Рассылка завершена. Успешно: ${successCount}/${forms.length}`,
+            results: results,
+            successCount: successCount,
+            totalCount: forms.length
+        });
+
+    } catch (error) {
+        console.error('❌ Ошибка массовой рассылки:', error);
+        await logRequest('SYSTEM', 'MAINTENANCE_ERROR', error.message);
+        res.status(500).json({ 
+            status: 'error', 
+            message: 'Внутренняя ошибка сервера при рассылке' 
+        });
+    }
+});
+
 // Health check
 app.get('/health', (req, res) => {
     res.json({ 
@@ -2158,6 +2374,8 @@ initializeDatabase().then(database => {
 ✅ ФУТЕР "GTA5RP LAMESA"
 ✅ ПОДДЕРЖКА JSON-RPC POST
 ✅ УМНЫЕ УПОМИНАНИЯ
+✅ СОХРАНЕНИЕ НАСТРОЕК ФОРМ
+✅ РАССЫЛКА ТЕХНИЧЕСКИХ УВЕДОМЛЕНИЙ
 🔐 БЕЗОПАСНАЯ АУТЕНТИФИКАЦИЯ
 
 ⚡ СЕРВЕР ГОТОВ К РАБОТЕ!
