@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const sqlite3 = require('sqlite3').verbose();
 const session = require('express-session');
 const bcrypt = require('bcryptjs');
+const multer = require('multer');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -41,6 +42,7 @@ async function createDirectories() {
         await fs.mkdir(BACKUP_DIR, { recursive: true });
         await fs.mkdir(path.join(__dirname, 'config'), { recursive: true });
         await fs.mkdir(path.join(__dirname, 'logs'), { recursive: true });
+        await fs.mkdir(path.join(__dirname, 'uploads'), { recursive: true });
         console.log('✅ Директории созданы');
     } catch (error) {
         console.error('❌ Ошибка создания директорий:', error);
@@ -263,7 +265,22 @@ async function sendDiscordMessage(formConfig, formData, answers) {
             const isDiscordIdField = discordIdFields.includes(index);
             
             // Используем кастомное название вопроса или генерируем стандартное
-            const questionText = questionTitles[index] || `Вопрос ${index + 1}`;
+            let questionText;
+            
+            // Обрабатываем разные форматы questionTitles
+            if (questionTitles[index]) {
+                if (typeof questionTitles[index] === 'object' && questionTitles[index].title) {
+                    // Новый формат: {index: number, title: string}
+                    questionText = questionTitles[index].title;
+                } else if (typeof questionTitles[index] === 'string') {
+                    // Старый формат: массив строк
+                    questionText = questionTitles[index];
+                } else {
+                    questionText = `Вопрос ${index + 1}`;
+                }
+            } else {
+                questionText = `Вопрос ${index + 1}`;
+            }
             
             if (isDiscordIdField) {
                 const discordId = answer.text.replace(/[^0-9]/g, '');
@@ -317,8 +334,17 @@ async function sendDiscordMessage(formConfig, formData, answers) {
         payload.content = mentionContent;
     }
 
-    const response = await axios.post(formConfig.webhook_url, payload);
-    return response.data;
+    try {
+        const response = await axios.post(formConfig.webhook_url, payload, {
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
+        return response.data;
+    } catch (error) {
+        console.error('❌ Ошибка отправки в Discord:', error.response?.data || error.message);
+        throw new Error(`Discord API error: ${error.response?.data?.message || error.message}`);
+    }
 }
 
 // Функция для парсинга ответов
@@ -548,7 +574,7 @@ app.post('/webhook/yandex-form', async (req, res) => {
                     await logRequest(formId, 'DISCORD_ERROR', error.message);
                     res.status(500).json({
                         status: 'error',
-                        message: 'Ошибка отправки в Discord'
+                        message: 'Ошибка отправки в Discord: ' + error.message
                     });
                 }
             }
@@ -2853,7 +2879,7 @@ app.post('/admin/test-webhook/:formId', requireAuth, (req, res) => {
                 .catch(error => {
                     console.error('Ошибка тестирования вебхука:', error);
                     logRequest(formId, 'TEST_ERROR', error.message);
-                    res.status(500).json({ status: 'error', message: 'Ошибка отправки тестового сообщения' });
+                    res.status(500).json({ status: 'error', message: 'Ошибка отправки тестового сообщения: ' + error.message });
                 });
         }
     );
@@ -3050,7 +3076,6 @@ app.get('/admin/backup/export', requireAuth, async (req, res) => {
 });
 
 // Резервное копирование - импорт данных из JSON
-const multer = require('multer');
 const upload = multer({ dest: 'uploads/' });
 
 app.post('/admin/backup/import', requireAuth, upload.single('backupFile'), async (req, res) => {
