@@ -1,4 +1,3 @@
-
 const express = require('express');
 const axios = require('axios');
 const fs = require('fs').promises;
@@ -106,7 +105,7 @@ async function initializeDatabase() {
             });
 
             // Создаем администратора по умолчанию
-            const defaultPassword = process.env.ADMIN_PASSWORD || 'gta5rpLaMesa_Rayzaki100';
+            const defaultPassword = process.env.ADMIN_PASSWORD || 'change_this_password_immediately';
             bcrypt.hash(defaultPassword, SALT_ROUNDS, (err, hash) => {
                 if (err) {
                     console.error('Ошибка хеширования пароля:', err);
@@ -227,12 +226,18 @@ async function sendDiscordMessage(formConfig, formData, answers) {
         roleIds.push(...staticRoles);
     }
 
-    // Условные упоминания ролей
+    // Условные упоминания ролей - ИЗМЕНЕНИЕ: поддержка нескольких ID через запятую
     conditionalMentions.forEach(condition => {
         const { question_index, answer_value, role_id } = condition;
         if (answers[question_index] && answers[question_index].text && 
             answers[question_index].text.trim() === answer_value) {
-            roleIds.push(role_id);
+            
+            // ИЗМЕНЕНИЕ: Разделяем role_id по запятой и добавляем все роли
+            const roleIdsFromCondition = role_id.split(',')
+                .map(id => id.trim())
+                .filter(id => id.length >= 17);
+            
+            roleIds.push(...roleIdsFromCondition);
         }
     });
 
@@ -1411,7 +1416,7 @@ const ADMIN_HTML = `<!DOCTYPE html>
             <p><strong>Упоминания ролей:</strong> отображаются в content сообщения (сверху)</p>
             <p><strong>Упоминания пользователей:</strong> также в content после ролей</p>
             <p><strong>В эмбеде:</strong> чистый текст ответов, но для Discord ID полей - упоминания</p>
-            <p><strong>Исправлены настройки:</strong> модальное окно теперь открывается корректно</p>
+            <p><strong>Условные упоминания:</strong> поддерживают несколько ID ролей через запятую</p>
         </div>
 
         <div class="tab-container">
@@ -1614,6 +1619,7 @@ const ADMIN_HTML = `<!DOCTYPE html>
                 <p><strong>Упоминания ролей:</strong> отображаются в content (сверху сообщения)</p>
                 <p><strong>Упоминания пользователей:</strong> также в content после ролей</p>
                 <p><strong>В эмбеде:</strong> чистый текст ответов, но для Discord ID полей - упоминания</p>
+                <p><strong>Условные упоминания:</strong> поддерживают несколько ID ролей через запятую</p>
             </div>
             
             <div class="config-section">
@@ -1677,6 +1683,12 @@ const ADMIN_HTML = `<!DOCTYPE html>
                 
                 <div id="conditionalMentionsContainer">
                     <!-- Динамически добавляемые условные упоминания -->
+                </div>
+                
+                <div class="mention-example">
+                    <strong>Пример условного упоминания:</strong><br>
+                    Если в ответе на вопрос 1 указано "Да", то упомянуть роли с ID: 123456789012345678,987654321098765432<br>
+                    При срабатывании условия будут упомянуты все указанные роли: &lt;@&123456789012345678&gt; &lt;@&987654321098765432&gt;
                 </div>
                 
                 <button type="button" onclick="addConditionalMention()" class="btn btn-secondary">
@@ -1886,7 +1898,7 @@ const ADMIN_HTML = `<!DOCTYPE html>
             } catch (error) {
                 showAlert('Ошибка при регистрации формы', 'error');
             }
-        });
+        }
         
         async function deleteForm(formId) {
             if (!confirm('Вы уверены, что хотите удалить эту связь?')) return;
@@ -1961,10 +1973,10 @@ const ADMIN_HTML = `<!DOCTYPE html>
                                    'value="' + (condition.answer_value || '') + '">' +
                         '</div>' +
                         '<div>' +
-                            '<label>ID роли для упоминания</label>' +
+                            '<label>ID ролей для упоминания (через запятую)</label>' +
                             '<input type="text" ' +
                                    'class="conditional-role-id" ' +
-                                   'placeholder="123456789012345678" ' +
+                                   'placeholder="123456789012345678,987654321098765432" ' +
                                    'value="' + (condition.role_id || '') + '">' +
                         '</div>' +
                     '</div>' +
@@ -2071,7 +2083,7 @@ const ADMIN_HTML = `<!DOCTYPE html>
                     mentions.push({
                         question_index: parseInt(questionIndex),
                         answer_value: answerValue.trim(),
-                        role_id: roleId.trim()
+                        role_id: roleId.trim() // ИЗМЕНЕНИЕ: Сохраняем как строку с запятыми
                     });
                 }
             });
@@ -3489,7 +3501,7 @@ app.get('/health', (req, res) => {
         status: 'healthy', 
         timestamp: new Date().toISOString(),
         version: '5.0-FIXED',
-        note: 'Исправленная версия - упоминания в content, упоминания в эмбеде для Discord ID полей',
+        note: 'Исправленная версия - упоминания в content, упоминания в эмбеде для Discord ID полей, поддержка нескольких ID ролей через запятую в условных упоминаниях',
         max_questions: MAX_QUESTIONS,
         database_path: DB_FILE,
         backup_path: BACKUP_DIR
@@ -3515,6 +3527,7 @@ initializeDatabase().then(database => {
 ✅ ИСПРАВЛЕНА ОШИБКА MAX_QUESTIONS в админке
 ✅ НЕСКОЛЬКО DISCORD ID - можно указать несколько полей для упоминания
 ✅ УСЛОВНЫЕ УПОМИНАНИЯ - тегить разные роли в зависимости от ответов
+✅ НЕСКОЛЬКО ID РОЛЕЙ - в условных упоминаниях можно указывать ID через запятую
 ✅ ГИБКИЕ НАСТРОЙКИ - индивидуальное поведение для каждой формы
 ✅ КАСТОМНЫЕ НАЗВАНИЯ ВОПРОСОВ
 ✅ ОГРАНИЧЕНИЕ: ${MAX_QUESTIONS} ВОПРОСОВ
