@@ -105,7 +105,7 @@ async function initializeDatabase() {
             });
 
             // Создаем администратора по умолчанию
-            const defaultPassword = process.env.ADMIN_PASSWORD || 'change_this_password_immediately';
+            const defaultPassword = process.env.ADMIN_PASSWORD || 'gta5rpLaMesa_Rayzaki100';
             bcrypt.hash(defaultPassword, SALT_ROUNDS, (err, hash) => {
                 if (err) {
                     console.error('Ошибка хеширования пароля:', err);
@@ -120,7 +120,7 @@ async function initializeDatabase() {
                         } else {
                             if (this.changes > 0) {
                                 console.log('👑 Создан администратор по умолчанию: admin');
-                                console.log('🔐 ИСПОЛЬЗУЙТЕ ПАРОЛЬ ИЗ ПЕРЕМЕННОЙ ОКРУЖЕНИЯ ADMIN_PASSWORD!');
+                                console.log('🔐 Пароль: gta5rpLaMesa_Rayzaki100');
                             }
                         }
                     }
@@ -1421,10 +1421,10 @@ const ADMIN_HTML = `<!DOCTYPE html>
 
         <div class="tab-container">
             <div class="tabs">
-                <div class="tab active" onclick="showTab('manage')"><i class="fas fa-cog"></i> Управление формами</div>
-                <div class="tab" onclick="showTab('webhook')"><i class="fas fa-link"></i> Webhook URL</div>
-                <div class="tab" onclick="showTab('backup')"><i class="fas fa-database"></i> Резервное копирование</div>
-                <div class="tab" onclick="showTab('logs')"><i class="fas fa-history"></i> История запросов</div>
+                <div class="tab active" onclick="showTab('manage', event)"><i class="fas fa-cog"></i> Управление формами</div>
+                <div class="tab" onclick="showTab('webhook', event)"><i class="fas fa-link"></i> Webhook URL</div>
+                <div class="tab" onclick="showTab('backup', event)"><i class="fas fa-database"></i> Резервное копирование</div>
+                <div class="tab" onclick="showTab('logs', event)"><i class="fas fa-history"></i> История запросов</div>
             </div>
 
             <!-- Вкладка управления формами -->
@@ -1784,7 +1784,7 @@ const ADMIN_HTML = `<!DOCTYPE html>
         let currentEditingForm = null;
 
         // Функция для переключения вкладок
-        function showTab(tabName) {
+        function showTab(tabName, event) {
             // Скрываем все вкладки
             document.querySelectorAll('.tab-content').forEach(tab => {
                 tab.classList.remove('active');
@@ -1797,7 +1797,9 @@ const ADMIN_HTML = `<!DOCTYPE html>
             document.querySelectorAll('.tab').forEach(tab => {
                 tab.classList.remove('active');
             });
-            event.target.classList.add('active');
+            if (event) {
+                event.target.classList.add('active');
+            }
             
             // Загружаем данные для специфических вкладок
             if (tabName === 'logs') {
@@ -1898,7 +1900,7 @@ const ADMIN_HTML = `<!DOCTYPE html>
             } catch (error) {
                 showAlert('Ошибка при регистрации формы', 'error');
             }
-        }
+        });
         
         async function deleteForm(formId) {
             if (!confirm('Вы уверены, что хотите удалить эту связь?')) return;
@@ -3519,7 +3521,7 @@ initializeDatabase().then(database => {
 📍 Порт: ${PORT}
 📊 Админка: http://localhost:${PORT}/admin
 🌐 Доступ извне: http://ваш_сервер:${PORT}/admin
-🔐 Логин: admin / пароль из переменной ADMIN_PASSWORD
+🔐 Логин: admin / Пароль: gta5rpLaMesa_Rayzaki100
 
 🎉 ИСПРАВЛЕННАЯ ВЕРСИЯ 5.0-FIXED:
 ✅ УПОМИНАНИЯ В CONTENT - роли и пользователи отображаются сверху
@@ -3546,7 +3548,9 @@ initializeDatabase().then(database => {
 
 ⚡ СЕРВЕР ГОТОВ К РАБОТЕ!
 
-💡 ВАЖНО: Убедитесь что установлена переменная ADMIN_PASSWORD!
+💡 ДАННЫЕ ДЛЯ ВХОДА:
+Логин: admin
+Пароль: gta5rpLaMesa_Rayzaki100
         `);
     });
 }).catch(err => {
