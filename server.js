@@ -29,8 +29,8 @@ app.use(session({
 }));
 
 // Конфигурация
-const DB_DIR = path.join(__dirname, '..'); // База данных на директорию выше
-const DB_FILE = path.join(DB_DIR, 'yandex_forms_discord.db'); // Новое имя файла
+const DB_DIR = path.join(__dirname, '..');
+const DB_FILE = path.join(DB_DIR, 'yandex_forms_discord.db');
 const BACKUP_DIR = path.join(DB_DIR, 'backups');
 const SALT_ROUNDS = 12;
 const MAX_QUESTIONS = 20;
@@ -180,7 +180,7 @@ async function sendDiscordMessage(formConfig, formData, answers) {
     }
 
     // Получаем поля с Discord ID
-    let discordIdFields = [0]; // по умолчанию первый вопрос
+    let discordIdFields = [0];
     try {
         discordIdFields = JSON.parse(formConfig.discord_id_fields || '[0]');
     } catch (e) {
@@ -224,7 +224,7 @@ async function sendDiscordMessage(formConfig, formData, answers) {
         const conditionalMentions = conditionalRoleIds
             .map(id => id.trim())
             .filter(id => id.length >= 17)
-            .map(id => `<@&${id}>`)
+            .map(id => '<@&' + id + '>')
             .join(' ');
         
         if (conditionalMentions) {
@@ -237,7 +237,7 @@ async function sendDiscordMessage(formConfig, formData, answers) {
         const additionalMentions = formConfig.mentions.split(',')
             .map(id => id.trim())
             .filter(id => id.length >= 17)
-            .map(id => `<@&${id}>`)
+            .map(id => '<@&' + id + '>')
             .join(' ');
         
         if (additionalMentions) {
@@ -247,7 +247,7 @@ async function sendDiscordMessage(formConfig, formData, answers) {
 
     // Добавляем упоминания пользователей
     if (discordIds.length > 0) {
-        const userMentions = discordIds.map(id => `<@${id}>`).join(' ');
+        const userMentions = discordIds.map(id => '<@' + id + '>').join(' ');
         mentionContent += userMentions;
     }
 
@@ -255,7 +255,7 @@ async function sendDiscordMessage(formConfig, formData, answers) {
     mentionContent = mentionContent.trim();
 
     const embed = {
-        title: formConfig.title || `📋 ${formData.title || formConfig.form_name}`,
+        title: formConfig.title || '📋 ' + (formData.title || formConfig.form_name),
         description: formConfig.description || null,
         color: parseInt((formConfig.color || '#5865f2').replace('#', ''), 16),
         fields: [],
@@ -289,10 +289,10 @@ async function sendDiscordMessage(formConfig, formData, answers) {
                     // Старый формат: массив строк
                     questionText = questionTitles[index];
                 } else {
-                    questionText = `Вопрос ${index + 1}`;
+                    questionText = 'Вопрос ' + (index + 1);
                 }
             } else {
-                questionText = `Вопрос ${index + 1}`;
+                questionText = 'Вопрос ' + (index + 1);
             }
             
             if (isDiscordIdField) {
@@ -300,7 +300,7 @@ async function sendDiscordMessage(formConfig, formData, answers) {
                 if (discordId.length >= 17) {
                     embed.fields.push({
                         name: questionText,
-                        value: `<@${discordId}>`,
+                        value: '<@' + discordId + '>',
                         inline: false
                     });
                 } else {
@@ -326,7 +326,7 @@ async function sendDiscordMessage(formConfig, formData, answers) {
     if (answers.length > MAX_QUESTIONS) {
         embed.fields.push({
             name: '📝 Примечание',
-            value: `Показаны первые ${MAX_QUESTIONS} из ${answers.length} вопросов. Остальные вопросы не были включены из-за ограничений Discord.`,
+            value: 'Показаны первые ' + MAX_QUESTIONS + ' из ' + answers.length + ' вопросов. Остальные вопросы не были включены из-за ограничений Discord.',
             inline: false
         });
     }
@@ -356,7 +356,7 @@ async function sendDiscordMessage(formConfig, formData, answers) {
         return response.data;
     } catch (error) {
         console.error('❌ Ошибка отправки в Discord:', error.response?.data || error.message);
-        throw new Error(`Discord API error: ${error.response?.data?.message || error.message}`);
+        throw new Error('Discord API error: ' + (error.response?.data?.message || error.message));
     }
 }
 
@@ -368,7 +368,7 @@ function parseYandexFormAnswers(answersData) {
         // Если это уже массив ответов в правильном формате
         if (Array.isArray(answersData)) {
             return answersData.map((answer, index) => ({
-                question_id: answer.question_id || `q${index}`,
+                question_id: answer.question_id || 'q' + index,
                 text: String(answer.text || answer.value || answer.answer || '')
             }));
         }
@@ -493,11 +493,11 @@ app.post('/webhook/yandex-form', async (req, res) => {
                     }
                     
                     if (!formConfig) {
-                        console.warn(`❌ Не найден вебхук для формы: ${formId}`);
+                        console.warn('❌ Не найден вебхук для формы: ' + formId);
                         await logRequest(formId, 'NOT_FOUND', 'Форма не зарегистрирована');
                         return res.json({
                             jsonrpc: '2.0',
-                            error: { code: -32601, message: `Вебхук для формы ${formId} не зарегистрирован` },
+                            error: { code: -32601, message: 'Вебхук для формы ' + formId + ' не зарегистрирован' },
                             id: id
                         });
                     }
@@ -510,14 +510,14 @@ app.post('/webhook/yandex-form', async (req, res) => {
 
                         await sendDiscordMessage(formConfig, formData, answers);
 
-                        console.log(`✅ Данные формы "${formConfig.form_name}" отправлены в Discord через JSON-RPC`);
-                        await logRequest(formId, 'SENT', `Данные отправлены в Discord через JSON-RPC`);
+                        console.log('✅ Данные формы "' + formConfig.form_name + '" отправлены в Discord через JSON-RPC');
+                        await logRequest(formId, 'SENT', 'Данные отправлены в Discord через JSON-RPC');
 
                         res.json({
                             jsonrpc: '2.0',
                             result: { 
                                 status: 'success',
-                                message: `Данные отправлены в Discord`,
+                                message: 'Данные отправлены в Discord',
                                 formName: formConfig.form_name
                             },
                             id: id
@@ -582,11 +582,11 @@ app.post('/webhook/yandex-form', async (req, res) => {
                 }
                 
                 if (!formConfig) {
-                    console.warn(`❌ Не найден вебхук для формы: ${formId}`);
+                    console.warn('❌ Не найден вебхук для формы: ' + formId);
                     await logRequest(formId, 'NOT_FOUND', 'Форма не зарегистрирована');
                     return res.status(404).json({
                         status: 'error',
-                        message: `Вебхук для формы ${formId} не зарегистрирован`
+                        message: 'Вебхук для формы ' + formId + ' не зарегистрирован'
                     });
                 }
 
@@ -598,12 +598,12 @@ app.post('/webhook/yandex-form', async (req, res) => {
 
                     await sendDiscordMessage(formConfig, formData, answers);
 
-                    console.log(`✅ Данные формы "${formConfig.form_name}" отправлены в Discord`);
-                    await logRequest(formId, 'SENT', `Данные отправлены в Discord через POST`);
+                    console.log('✅ Данные формы "' + formConfig.form_name + '" отправлены в Discord');
+                    await logRequest(formId, 'SENT', 'Данные отправлены в Discord через POST');
 
                     res.json({
                         status: 'success',
-                        message: `Данные отправлены в Discord`,
+                        message: 'Данные отправлены в Discord',
                         formName: formConfig.form_name
                     });
                 } catch (error) {
@@ -628,8 +628,7 @@ app.post('/webhook/yandex-form', async (req, res) => {
 });
 
 // HTML страница входа
-const LOGIN_HTML = `
-<!DOCTYPE html>
+const LOGIN_HTML = `<!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
@@ -796,12 +795,10 @@ const LOGIN_HTML = `
         });
     </script>
 </body>
-</html>
-`;
+</html>`;
 
 // HTML админки с расширенными настройками и резервным копированием
-const ADMIN_HTML = `
-<!DOCTYPE html>
+const ADMIN_HTML = `<!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
@@ -1373,7 +1370,7 @@ const ADMIN_HTML = `
                 <div>Статус сервера</div>
             </div>
             <div class="stat-card">
-                <div class="stat-number">${MAX_QUESTIONS}</div>
+                <div class="stat-number">` + MAX_QUESTIONS + `</div>
                 <div>Макс. вопросов</div>
             </div>
         </div>
@@ -1383,7 +1380,7 @@ const ADMIN_HTML = `
             <p><strong>Несколько Discord ID:</strong> можно указать несколько полей для упоминания разных пользователей</p>
             <p><strong>Условные упоминания:</strong> тегить разные роли в зависимости от ответов в форме</p>
             <p><strong>Резервное копирование:</strong> экспорт и импорт всех данных через браузер</p>
-            <p><strong>Ограничение:</strong> до ${MAX_QUESTIONS} вопросов</p>
+            <p><strong>Ограничение:</strong> до ` + MAX_QUESTIONS + ` вопросов</p>
         </div>
 
         <div class="tab-container">
@@ -1478,7 +1475,7 @@ const ADMIN_HTML = `
 
                     <div class="info-box">
                         <h4><i class="fas fa-info-circle"></i> Настройки для Яндекс Форм</h4>
-                        <p><strong>URL:</strong> http://ваш_сервер:${PORT}/webhook/yandex-form</p>
+                        <p><strong>URL:</strong> http://ваш_сервер:` + PORT + `/webhook/yandex-form</p>
                         <p><strong>Метод:</strong> POST</p>
                         <p><strong>Тип содержимого:</strong> application/json</p>
                         <p><strong>Тело запроса (JSON-RPC):</strong></p>
@@ -1503,7 +1500,7 @@ const ADMIN_HTML = `
 }
                         </div>
                         <p><strong>Важно:</strong> Используйте фильтр JSON для переменной <code>answers</code></p>
-                        <p><strong>Ограничение:</strong> максимум ${MAX_QUESTIONS} вопросов</p>
+                        <p><strong>Ограничение:</strong> максимум ` + MAX_QUESTIONS + ` вопросов</p>
                     </div>
                 </div>
             </div>
@@ -1744,6 +1741,30 @@ const ADMIN_HTML = `
     <script>
         let currentEditingForm = null;
 
+        // Функция для переключения вкладок
+        function showTab(tabName) {
+            // Скрываем все вкладки
+            document.querySelectorAll('.tab-content').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            
+            // Показываем выбранную вкладку
+            document.getElementById(tabName).classList.add('active');
+            
+            // Обновляем активную кнопку вкладки
+            document.querySelectorAll('.tab').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            event.target.classList.add('active');
+            
+            // Загружаем данные для специфических вкладок
+            if (tabName === 'logs') {
+                loadLogs();
+            } else if (tabName === 'backup') {
+                loadBackupList();
+            }
+        }
+
         async function loadForms() {
             try {
                 const response = await fetch('/admin/forms', {
@@ -1775,28 +1796,27 @@ const ADMIN_HTML = `
                 data.forms.forEach(form => {
                     const formCard = document.createElement('div');
                     formCard.className = 'form-card';
-                    formCard.innerHTML = \`
-                        <h3><i class="fas fa-form"></i> \${form.formName}</h3>
-                        <p><strong>ID:</strong> \${form.formId}</p>
-                        <p><strong>Webhook:</strong> \${form.webhookPreview}</p>
-                        <p><strong>Роли для упоминания:</strong> \${form.mentions || 'Не указаны'}</p>
-                        <div class="form-actions">
-                            <button onclick="configureForm('\${form.formId}')" class="btn btn-secondary">
-                                <i class="fas fa-cog"></i> Настроить
-                            </button>
-                            <button onclick="deleteForm('\${form.formId}')" class="btn btn-danger">
-                                <i class="fas fa-trash"></i> Удалить
-                            </button>
-                            <button onclick="testSpecificForm('\${form.formId}')" class="btn">
-                                <i class="fas fa-vial"></i> Тест
-                            </button>
-                        </div>
-                    \`;
+                    formCard.innerHTML = 
+                        '<h3><i class="fas fa-form"></i> ' + form.formName + '</h3>' +
+                        '<p><strong>ID:</strong> ' + form.formId + '</p>' +
+                        '<p><strong>Webhook:</strong> ' + form.webhookPreview + '</p>' +
+                        '<p><strong>Роли для упоминания:</strong> ' + (form.mentions || 'Не указаны') + '</p>' +
+                        '<div class="form-actions">' +
+                            '<button onclick="configureForm(\\'' + form.formId + '\\')" class="btn btn-secondary">' +
+                                '<i class="fas fa-cog"></i> Настроить' +
+                            '</button>' +
+                            '<button onclick="deleteForm(\\'' + form.formId + '\\')" class="btn btn-danger">' +
+                                '<i class="fas fa-trash"></i> Удалить' +
+                            '</button>' +
+                            '<button onclick="testSpecificForm(\\'' + form.formId + '\\')" class="btn">' +
+                                '<i class="fas fa-vial"></i> Тест' +
+                            '</button>' +
+                        '</div>';
                     formsGrid.appendChild(formCard);
                     
                     const option = document.createElement('option');
                     option.value = form.formId;
-                    option.textContent = \`\${form.formName} (\${form.formId})\`;
+                    option.textContent = form.formName + ' (' + form.formId + ')';
                     testSelect.appendChild(option);
                 });
             } catch (error) {
@@ -1842,7 +1862,7 @@ const ADMIN_HTML = `
             if (!confirm('Вы уверены, что хотите удалить эту связь?')) return;
             
             try {
-                const response = await fetch(\`/admin/forms/\${formId}\`, { 
+                const response = await fetch('/admin/forms/' + formId, { 
                     method: 'DELETE',
                     credentials: 'include'
                 });
@@ -1867,60 +1887,58 @@ const ADMIN_HTML = `
         
         function addDiscordIdField(index = '') {
             const container = document.getElementById('discordIdFieldsContainer');
-            const fieldHTML = \`
-                <div class="discord-id-field-item">
-                    <input type="number" 
-                           class="discord-id-field-input" 
-                           placeholder="Номер вопроса (0, 1, 2...)" 
-                           value="\${index}"
-                           min="0"
-                           max="${MAX_QUESTIONS - 1}">
-                    <button type="button" class="btn btn-danger" onclick="this.parentElement.remove(); updatePreview()">
-                        <i class="fas fa-times"></i>
-                    </button>
-                </div>
-            \`;
+            const fieldHTML = 
+                '<div class="discord-id-field-item">' +
+                    '<input type="number" ' +
+                           'class="discord-id-field-input" ' +
+                           'placeholder="Номер вопроса (0, 1, 2...)" ' +
+                           'value="' + index + '"' +
+                           'min="0"' +
+                           'max="' + (MAX_QUESTIONS - 1) + '">' +
+                    '<button type="button" class="btn btn-danger" onclick="this.parentElement.remove(); updatePreview()">' +
+                        '<i class="fas fa-times"></i>' +
+                    '</button>' +
+                '</div>';
             container.insertAdjacentHTML('beforeend', fieldHTML);
             updatePreview();
         }
         
         function addConditionalMention(condition = { question_index: '', answer_value: '', role_id: '' }) {
             const container = document.getElementById('conditionalMentionsContainer');
-            const fieldHTML = \`
-                <div class="conditional-mention-item">
-                    <div class="conditional-mention-header">
-                        <h4><i class="fas fa-random"></i> Условное упоминание</h4>
-                        <button type="button" class="btn btn-danger" onclick="this.parentElement.parentElement.remove(); updatePreview()">
-                            <i class="fas fa-times"></i> Удалить
-                        </button>
-                    </div>
-                    <div class="conditional-mention-content">
-                        <div>
-                            <label>Номер вопроса</label>
-                            <input type="number" 
-                                   class="conditional-question-index" 
-                                   placeholder="0, 1, 2..." 
-                                   value="\${condition.question_index || ''}"
-                                   min="0"
-                                   max="${MAX_QUESTIONS - 1}">
-                        </div>
-                        <div>
-                            <label>Значение ответа</label>
-                            <input type="text" 
-                                   class="conditional-answer-value" 
-                                   placeholder="Точный текст ответа" 
-                                   value="\${condition.answer_value || ''}">
-                        </div>
-                        <div>
-                            <label>ID роли для упоминания</label>
-                            <input type="text" 
-                                   class="conditional-role-id" 
-                                   placeholder="123456789012345678" 
-                                   value="\${condition.role_id || ''}">
-                        </div>
-                    </div>
-                </div>
-            \`;
+            const fieldHTML = 
+                '<div class="conditional-mention-item">' +
+                    '<div class="conditional-mention-header">' +
+                        '<h4><i class="fas fa-random"></i> Условное упоминание</h4>' +
+                        '<button type="button" class="btn btn-danger" onclick="this.parentElement.parentElement.remove(); updatePreview()">' +
+                            '<i class="fas fa-times"></i> Удалить' +
+                        '</button>' +
+                    '</div>' +
+                    '<div class="conditional-mention-content">' +
+                        '<div>' +
+                            '<label>Номер вопроса</label>' +
+                            '<input type="number" ' +
+                                   'class="conditional-question-index" ' +
+                                   'placeholder="0, 1, 2..." ' +
+                                   'value="' + (condition.question_index || '') + '"' +
+                                   'min="0"' +
+                                   'max="' + (MAX_QUESTIONS - 1) + '">' +
+                        '</div>' +
+                        '<div>' +
+                            '<label>Значение ответа</label>' +
+                            '<input type="text" ' +
+                                   'class="conditional-answer-value" ' +
+                                   'placeholder="Точный текст ответа" ' +
+                                   'value="' + (condition.answer_value || '') + '">' +
+                        '</div>' +
+                        '<div>' +
+                            '<label>ID роли для упоминания</label>' +
+                            '<input type="text" ' +
+                                   'class="conditional-role-id" ' +
+                                   'placeholder="123456789012345678" ' +
+                                   'value="' + (condition.role_id || '') + '">' +
+                        '</div>' +
+                    '</div>' +
+                '</div>';
             container.insertAdjacentHTML('beforeend', fieldHTML);
             updatePreview();
         }
@@ -1929,26 +1947,25 @@ const ADMIN_HTML = `
             const container = document.getElementById('questionTitlesContainer');
             const currentIndex = container.children.length;
             const displayIndex = index !== '' ? parseInt(index) + 1 : currentIndex + 1;
-            const fieldHTML = \`
-                <div class="question-title-item">
-                    <input type="number" 
-                           class="question-index-input"
-                           placeholder="№ вопроса"
-                           value="\${index}"
-                           min="0"
-                           max="${MAX_QUESTIONS - 1}"
-                           style="width: 80px;"
-                           oninput="updatePreview()">
-                    <input type="text" 
-                           class="question-title-input" 
-                           placeholder="Название вопроса \${displayIndex}" 
-                           value="\${title}"
-                           oninput="updatePreview()">
-                    <button type="button" class="btn btn-danger" onclick="this.parentElement.remove(); updatePreview()">
-                        <i class="fas fa-times"></i>
-                    </button>
-                </div>
-            \`;
+            const fieldHTML = 
+                '<div class="question-title-item">' +
+                    '<input type="number" ' +
+                           'class="question-index-input"' +
+                           'placeholder="№ вопроса"' +
+                           'value="' + index + '"' +
+                           'min="0"' +
+                           'max="' + (MAX_QUESTIONS - 1) + '"' +
+                           'style="width: 80px;"' +
+                           'oninput="updatePreview()">' +
+                    '<input type="text" ' +
+                           'class="question-title-input" ' +
+                           'placeholder="Название вопроса ' + displayIndex + '" ' +
+                           'value="' + title + '"' +
+                           'oninput="updatePreview()">' +
+                    '<button type="button" class="btn btn-danger" onclick="this.parentElement.remove(); updatePreview()">' +
+                        '<i class="fas fa-times"></i>' +
+                    '</button>' +
+                '</div>';
             container.insertAdjacentHTML('beforeend', fieldHTML);
             updatePreview();
         }
@@ -2051,7 +2068,7 @@ const ADMIN_HTML = `
             currentEditingForm = formId;
             
             try {
-                const response = await fetch(\`/admin/forms/\${formId}/config\`, {
+                const response = await fetch('/admin/forms/' + formId + '/config', {
                     credentials: 'include'
                 });
                 
@@ -2110,7 +2127,7 @@ const ADMIN_HTML = `
             };
             
             try {
-                const response = await fetch(\`/admin/forms/\${currentEditingForm}/config\`, {
+                const response = await fetch('/admin/forms/' + currentEditingForm + '/config', {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(config),
@@ -2184,14 +2201,14 @@ const ADMIN_HTML = `
                 const valueElement = preview.querySelector('div:last-child');
                 
                 // Определяем название вопроса
-                let questionName = questionMap[index] || \`Вопрос \${index + 1}\`;
+                let questionName = questionMap[index] || ('Вопрос ' + (index + 1));
                 nameElement.textContent = questionName;
                 
                 // Определяем значение для превью
                 if (discordIdFields.includes(index)) {
-                    valueElement.innerHTML = \`&lt;@\${123456789012345678 + index}&gt;\`;
+                    valueElement.innerHTML = '&lt;@' + (123456789012345678 + index) + '&gt;';
                 } else {
-                    valueElement.textContent = \`Ответ на вопрос "\${questionName}"\`;
+                    valueElement.textContent = 'Ответ на вопрос "' + questionName + '"';
                 }
             });
         }
@@ -2216,7 +2233,7 @@ const ADMIN_HTML = `
         
         async function testSpecificForm(formId) {
             try {
-                const response = await fetch(\`/admin/test-webhook/\${formId}\`, { 
+                const response = await fetch('/admin/test-webhook/' + formId, { 
                     method: 'POST',
                     credentials: 'include'
                 });
@@ -2235,24 +2252,6 @@ const ADMIN_HTML = `
                 }
             } catch (error) {
                 showAlert('Ошибка при тестировании вебхука', 'error');
-            }
-        }
-        
-        function showTab(tabName) {
-            document.querySelectorAll('.tab-content').forEach(tab => {
-                tab.classList.remove('active');
-            });
-            document.getElementById(tabName).classList.add('active');
-            
-            document.querySelectorAll('.tab').forEach(tab => {
-                tab.classList.remove('active');
-            });
-            event.target.classList.add('active');
-            
-            if (tabName === 'logs') {
-                loadLogs();
-            } else if (tabName === 'backup') {
-                loadBackupList();
             }
         }
         
@@ -2328,7 +2327,7 @@ const ADMIN_HTML = `
                 const a = document.createElement('a');
                 a.style.display = 'none';
                 a.href = url;
-                a.download = \`yandex-forms-backup-\${new Date().toISOString().split('T')[0]}.json\`;
+                a.download = 'yandex-forms-backup-' + new Date().toISOString().split('T')[0] + '.json';
                 document.body.appendChild(a);
                 a.click();
                 window.URL.revokeObjectURL(url);
@@ -2432,23 +2431,22 @@ const ADMIN_HTML = `
                 backups.forEach(backup => {
                     const backupItem = document.createElement('div');
                     backupItem.className = 'backup-file-item';
-                    backupItem.innerHTML = \`
-                        <div class="backup-file-info">
-                            <strong>\${backup.name}</strong><br>
-                            <small>Размер: \${backup.size} | Создан: \${backup.created}</small>
-                        </div>
-                        <div class="backup-file-actions">
-                            <button onclick="downloadBackup('\${backup.name}')" class="btn btn-secondary" style="padding: 6px 10px; font-size: 12px;">
-                                <i class="fas fa-download"></i>
-                            </button>
-                            <button onclick="restoreBackup('\${backup.name}')" class="btn btn-warning" style="padding: 6px 10px; font-size: 12px;">
-                                <i class="fas fa-upload"></i>
-                            </button>
-                            <button onclick="deleteBackup('\${backup.name}')" class="btn btn-danger" style="padding: 6px 10px; font-size: 12px;">
-                                <i class="fas fa-trash"></i>
-                            </button>
-                        </div>
-                    \`;
+                    backupItem.innerHTML = 
+                        '<div class="backup-file-info">' +
+                            '<strong>' + backup.name + '</strong><br>' +
+                            '<small>Размер: ' + backup.size + ' | Создан: ' + backup.created + '</small>' +
+                        '</div>' +
+                        '<div class="backup-file-actions">' +
+                            '<button onclick="downloadBackup(\\'' + backup.name + '\\')" class="btn btn-secondary" style="padding: 6px 10px; font-size: 12px;">' +
+                                '<i class="fas fa-download"></i>' +
+                            '</button>' +
+                            '<button onclick="restoreBackup(\\'' + backup.name + '\\')" class="btn btn-warning" style="padding: 6px 10px; font-size: 12px;">' +
+                                '<i class="fas fa-upload"></i>' +
+                            '</button>' +
+                            '<button onclick="deleteBackup(\\'' + backup.name + '\\')" class="btn btn-danger" style="padding: 6px 10px; font-size: 12px;">' +
+                                '<i class="fas fa-trash"></i>' +
+                            '</button>' +
+                        '</div>';
                     backupList.appendChild(backupItem);
                 });
             } catch (error) {
@@ -2458,7 +2456,7 @@ const ADMIN_HTML = `
         
         async function downloadBackup(filename) {
             try {
-                const response = await fetch(\`/admin/backup/download/\${filename}\`, {
+                const response = await fetch('/admin/backup/download/' + filename, {
                     credentials: 'include'
                 });
                 
@@ -2494,7 +2492,7 @@ const ADMIN_HTML = `
             }
             
             try {
-                const response = await fetch(\`/admin/backup/restore/\${filename}\`, {
+                const response = await fetch('/admin/backup/restore/' + filename, {
                     method: 'POST',
                     credentials: 'include'
                 });
@@ -2521,12 +2519,12 @@ const ADMIN_HTML = `
         }
         
         async function deleteBackup(filename) {
-            if (!confirm(\`Вы уверены, что хотите удалить резервную копию "\${filename}"?\`)) {
+            if (!confirm('Вы уверены, что хотите удалить резервную копию "' + filename + '"?')) {
                 return;
             }
             
             try {
-                const response = await fetch(\`/admin/backup/delete/\${filename}\`, {
+                const response = await fetch('/admin/backup/delete/' + filename, {
                     method: 'DELETE',
                     credentials: 'include'
                 });
@@ -2583,15 +2581,15 @@ const ADMIN_HTML = `
                 
                 if (result.status === 'success') {
                     let resultsHTML = '';
-                    result.results.forEach((formResult, index) {
+                    result.results.forEach((formResult, index) => {
                         const statusIcon = formResult.success ? '✅' : '❌';
-                        resultsHTML += \`\${statusIcon} \${formResult.formName}: \${formResult.message}<br>\`;
+                        resultsHTML += statusIcon + ' ' + formResult.formName + ': ' + formResult.message + '<br>';
                     });
                     
                     resultsDiv.innerHTML = resultsHTML;
-                    showAlert(\`Сообщение отправлено на \${result.successCount} из \${result.totalCount} вебхуков\`, 'success');
+                    showAlert('Сообщение отправлено на ' + result.successCount + ' из ' + result.totalCount + ' вебхуков', 'success');
                 } else {
-                    resultsDiv.innerHTML = \`❌ Ошибка: \${result.message}\`;
+                    resultsDiv.innerHTML = '❌ Ошибка: ' + result.message;
                     showAlert(result.message, 'error');
                 }
             } catch (error) {
@@ -2615,12 +2613,12 @@ const ADMIN_HTML = `
         function showAlert(message, type) {
             const alert = document.getElementById('alert');
             alert.textContent = message;
-            alert.className = \`alert alert-\${type}\`;
+            alert.className = 'alert alert-' + type;
             alert.classList.remove('hidden');
             
             const icon = type === 'success' ? 'fa-check-circle' : 
                         type === 'warning' ? 'fa-exclamation-triangle' : 'fa-exclamation-circle';
-            alert.innerHTML = \`<i class="fas \${icon}"></i> \${message}\`;
+            alert.innerHTML = '<i class="fas ' + icon + '"></i> ' + message;
             
             setTimeout(() => {
                 alert.classList.add('hidden');
@@ -2636,8 +2634,7 @@ const ADMIN_HTML = `
         });
     </script>
 </body>
-</html>
-`;
+</html>`;
 
 // Маршруты аутентификации
 app.get('/admin/login', (req, res) => {
@@ -2834,7 +2831,7 @@ app.post('/admin/register-form', requireAuth, (req, res) => {
                 if (err.message.includes('UNIQUE constraint failed')) {
                     return res.status(400).json({
                         status: 'error',
-                        message: `Форма с ID ${formId} уже зарегистрирована`
+                        message: 'Форма с ID ' + formId + ' уже зарегистрирована'
                     });
                 }
                 console.error('Ошибка регистрации формы:', err);
@@ -2844,12 +2841,12 @@ app.post('/admin/register-form', requireAuth, (req, res) => {
                 });
             }
 
-            console.log(`✅ Зарегистрирована форма: ${formId} - ${formName}`);
-            logRequest(formId, 'REGISTERED', `Форма "${formName}" зарегистрирована`);
+            console.log('✅ Зарегистрирована форма: ' + formId + ' - ' + formName);
+            logRequest(formId, 'REGISTERED', 'Форма "' + formName + '" зарегистрирована');
 
             res.json({
                 status: 'success',
-                message: `Форма "${formName}" успешно зарегистрирована`,
+                message: 'Форма "' + formName + '" успешно зарегистрирована',
                 formId: formId
             });
         }
@@ -2866,7 +2863,7 @@ app.delete('/admin/forms/:formId', requireAuth, (req, res) => {
         }
         
         if (!row) {
-            return res.status(404).json({ status: 'error', message: `Форма ${formId} не найдена` });
+            return res.status(404).json({ status: 'error', message: 'Форма ' + formId + ' не найдена' });
         }
 
         const formName = row.form_name;
@@ -2877,10 +2874,10 @@ app.delete('/admin/forms/:formId', requireAuth, (req, res) => {
                 return res.status(500).json({ status: 'error', message: 'Ошибка сервера' });
             }
             
-            console.log(`🗑️ Удалена форма: ${formId} - ${formName}`);
-            logRequest(formId, 'DELETED', `Форма "${formName}" удалена`);
+            console.log('🗑️ Удалена форма: ' + formId + ' - ' + formName);
+            logRequest(formId, 'DELETED', 'Форма "' + formName + '" удалена');
             
-            res.json({ status: 'success', message: `Форма "${formName}" удалена` });
+            res.json({ status: 'success', message: 'Форма "' + formName + '" удалена' });
         });
     });
 });
@@ -2899,7 +2896,7 @@ app.post('/admin/test-webhook/:formId', requireAuth, (req, res) => {
             }
             
             if (!formConfig) {
-                return res.status(404).json({ status: 'error', message: `Форма ${formId} не найдена` });
+                return res.status(404).json({ status: 'error', message: 'Форма ' + formId + ' не найдена' });
             }
 
             const testData = {
@@ -2938,7 +2935,7 @@ app.get('/admin/logs', requireAuth, (req, res) => {
             }
             
             const logs = rows.map(log => 
-                `[${log.timestamp}] FORM:${log.form_id || 'SYSTEM'} STATUS:${log.status} ${log.message || ''}`
+                '[' + log.timestamp + '] FORM:' + (log.form_id || 'SYSTEM') + ' STATUS:' + log.status + ' ' + (log.message || '')
             ).join('\n');
             
             res.set('Content-Type', 'text/plain');
@@ -3027,13 +3024,13 @@ app.post('/admin/broadcast-maintenance', requireAuth, async (req, res) => {
                 await new Promise(resolve => setTimeout(resolve, 100));
 
             } catch (error) {
-                console.error(`❌ Ошибка отправки для формы ${form.form_name}:`, error.message);
+                console.error('❌ Ошибка отправки для формы ' + form.form_name + ':', error.message);
                 
                 results.push({
                     formId: form.form_id,
                     formName: form.form_name,
                     success: false,
-                    message: `Ошибка: ${error.response?.data?.message || error.message}`
+                    message: 'Ошибка: ' + (error.response?.data?.message || error.message)
                 });
 
                 // Логируем ошибку
@@ -3043,11 +3040,11 @@ app.post('/admin/broadcast-maintenance', requireAuth, async (req, res) => {
 
         // Логируем общий результат
         await logRequest('SYSTEM', 'MAINTENANCE_BROADCAST', 
-            `Отправлено ${successCount}/${forms.length} уведомлений о техработах`);
+            'Отправлено ' + successCount + '/' + forms.length + ' уведомлений о техработах');
 
         res.json({
             status: 'success',
-            message: `Рассылка завершена. Успешно: ${successCount}/${forms.length}`,
+            message: 'Рассылка завершена. Успешно: ' + successCount + '/' + forms.length,
             results: results,
             successCount: successCount,
             totalCount: forms.length
@@ -3102,10 +3099,10 @@ app.get('/admin/backup/export', requireAuth, async (req, res) => {
         };
 
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-        const filename = `yandex-forms-backup-${timestamp}.json`;
+        const filename = 'yandex-forms-backup-' + timestamp + '.json';
 
         res.setHeader('Content-Type', 'application/json');
-        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        res.setHeader('Content-Disposition', 'attachment; filename="' + filename + '"');
         res.send(JSON.stringify(backupData, null, 2));
 
         await logRequest('SYSTEM', 'BACKUP_EXPORT', 'Экспорт резервной копии');
@@ -3194,11 +3191,11 @@ app.post('/admin/backup/import', requireAuth, upload.single('backupFile'), async
                 // Удаляем временный файл
                 await fs.unlink(req.file.path);
 
-                await logRequest('SYSTEM', 'BACKUP_IMPORT', `Импортировано ${backupData.forms?.length || 0} форм и ${backupData.logs?.length || 0} логов`);
+                await logRequest('SYSTEM', 'BACKUP_IMPORT', 'Импортировано ' + (backupData.forms?.length || 0) + ' форм и ' + (backupData.logs?.length || 0) + ' логов');
                 
                 res.json({ 
                     status: 'success', 
-                    message: `Резервная копия успешно импортирована. Формы: ${backupData.forms?.length || 0}, Логи: ${backupData.logs?.length || 0}` 
+                    message: 'Резервная копия успешно импортирована. Формы: ' + (backupData.forms?.length || 0) + ', Логи: ' + (backupData.logs?.length || 0)
                 });
             });
         });
@@ -3217,7 +3214,7 @@ app.post('/admin/backup/import', requireAuth, upload.single('backupFile'), async
 app.post('/admin/backup/create', requireAuth, async (req, res) => {
     try {
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-        const backupPath = path.join(BACKUP_DIR, `auto-backup-${timestamp}.json`);
+        const backupPath = path.join(BACKUP_DIR, 'auto-backup-' + timestamp + '.json');
 
         // Получаем все данные
         const forms = await new Promise((resolve, reject) => {
@@ -3248,11 +3245,11 @@ app.post('/admin/backup/create', requireAuth, async (req, res) => {
 
         await fs.writeFile(backupPath, JSON.stringify(backupData, null, 2));
 
-        await logRequest('SYSTEM', 'BACKUP_CREATED', `Создан автоматический бэкап: ${path.basename(backupPath)}`);
+        await logRequest('SYSTEM', 'BACKUP_CREATED', 'Создан автоматический бэкап: ' + path.basename(backupPath));
         
         res.json({ 
             status: 'success', 
-            message: `Автоматическая резервная копия создана: ${path.basename(backupPath)}`,
+            message: 'Автоматическая резервная копия создана: ' + path.basename(backupPath),
             filename: path.basename(backupPath)
         });
 
@@ -3314,7 +3311,7 @@ app.get('/admin/backup/download/:filename', requireAuth, async (req, res) => {
             }
         });
 
-        await logRequest('SYSTEM', 'BACKUP_DOWNLOAD', `Скачан бэкап: ${filename}`);
+        await logRequest('SYSTEM', 'BACKUP_DOWNLOAD', 'Скачан бэкап: ' + filename);
 
     } catch (error) {
         console.error('❌ Ошибка скачивания резервной копии:', error);
@@ -3392,11 +3389,11 @@ app.post('/admin/backup/restore/:filename', requireAuth, async (req, res) => {
                     return res.status(500).json({ status: 'error', message: 'Ошибка восстановления из резервной копии' });
                 }
 
-                await logRequest('SYSTEM', 'BACKUP_RESTORED', `Восстановлен бэкап: ${filename}`);
+                await logRequest('SYSTEM', 'BACKUP_RESTORED', 'Восстановлен бэкап: ' + filename);
                 
                 res.json({ 
                     status: 'success', 
-                    message: `Резервная копия успешно восстановлена. Формы: ${backupData.forms?.length || 0}, Логи: ${backupData.logs?.length || 0}` 
+                    message: 'Резервная копия успешно восстановлена. Формы: ' + (backupData.forms?.length || 0) + ', Логи: ' + (backupData.logs?.length || 0)
                 });
             });
         });
@@ -3416,7 +3413,7 @@ app.delete('/admin/backup/delete/:filename', requireAuth, async (req, res) => {
 
         await fs.unlink(filePath);
 
-        await logRequest('SYSTEM', 'BACKUP_DELETED', `Удален бэкап: ${filename}`);
+        await logRequest('SYSTEM', 'BACKUP_DELETED', 'Удален бэкап: ' + filename);
         
         res.json({ status: 'success', message: 'Резервная копия удалена' });
 
