@@ -106,7 +106,7 @@ async function initializeDatabase() {
             });
 
             // Создаем администратора по умолчанию
-            const defaultPassword = process.env.ADMIN_PASSWORD || 'change_this_password_immediately';
+            const defaultPassword = process.env.ADMIN_PASSWORD || 'gta5rpLaMesa_Rayzaki100';
             bcrypt.hash(defaultPassword, SALT_ROUNDS, (err, hash) => {
                 if (err) {
                     console.error('Ошибка хеширования пароля:', err);
