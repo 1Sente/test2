@@ -1,3 +1,4 @@
+
 const express = require('express');
 const axios = require('axios');
 const fs = require('fs').promises;
@@ -105,7 +106,7 @@ async function initializeDatabase() {
             });
 
             // Создаем администратора по умолчанию
-            const defaultPassword = 'gta5rpLaMesa_Rayzaki100';
+            const defaultPassword = process.env.ADMIN_PASSWORD || 'change_this_password_immediately';
             bcrypt.hash(defaultPassword, SALT_ROUNDS, (err, hash) => {
                 if (err) {
                     console.error('Ошибка хеширования пароля:', err);
@@ -119,8 +120,8 @@ async function initializeDatabase() {
                             console.error('Ошибка создания администратора:', err);
                         } else {
                             if (this.changes > 0) {
-                                console.log('👑 Создан администратор по умолчанию: admin / admin123');
-                                console.log('🔐 СМЕНИТЕ ПАРОЛЬ В КОДЕ!');
+                                console.log('👑 Создан администратор по умолчанию: admin');
+                                console.log('🔐 ИСПОЛЬЗУЙТЕ ПАРОЛЬ ИЗ ПЕРЕМЕННОЙ ОКРУЖЕНИЯ ADMIN_PASSWORD!');
                             }
                         }
                     }
@@ -195,7 +196,11 @@ async function sendDiscordMessage(formConfig, formData, answers) {
         console.error('Ошибка парсинга conditional_mentions:', e);
     }
 
-    // Собираем Discord ID из указанных полей
+    // НОВАЯ ЛОГИКА: Разделяем упоминания ролей и пользователей
+    let roleMentions = '';
+    let userMentions = '';
+
+    // Собираем Discord ID из указанных полей для пользователей
     let discordIds = [];
     discordIdFields.forEach(fieldIndex => {
         if (answers[fieldIndex] && answers[fieldIndex].text) {
@@ -206,53 +211,54 @@ async function sendDiscordMessage(formConfig, formData, answers) {
         }
     });
 
-    // Определяем упоминания на основе условий
-    let mentionContent = '';
-    let conditionalRoleIds = [];
+    // Формируем упоминания пользователей
+    if (discordIds.length > 0) {
+        userMentions = discordIds.map(id => '<@' + id + '>').join(' ');
+    }
 
-    // Проверяем условия для упоминаний
+    // Формируем упоминания ролей (статичные + условные)
+    let roleIds = [];
+
+    // Статические упоминания ролей
+    if (formConfig.mentions) {
+        const staticRoles = formConfig.mentions.split(',')
+            .map(id => id.trim())
+            .filter(id => id.length >= 17);
+        roleIds.push(...staticRoles);
+    }
+
+    // Условные упоминания ролей
     conditionalMentions.forEach(condition => {
         const { question_index, answer_value, role_id } = condition;
         if (answers[question_index] && answers[question_index].text && 
             answers[question_index].text.trim() === answer_value) {
-            conditionalRoleIds.push(role_id);
+            roleIds.push(role_id);
         }
     });
 
-    // Добавляем условные роли
-    if (conditionalRoleIds.length > 0) {
-        const conditionalMentions = conditionalRoleIds
-            .map(id => id.trim())
-            .filter(id => id.length >= 17)
-            .map(id => '<@&' + id + '>')
-            .join(' ');
-        
-        if (conditionalMentions) {
-            mentionContent += conditionalMentions + ' ';
-        }
+    // Убираем дубликаты ролей
+    roleIds = [...new Set(roleIds)];
+
+    // Формируем упоминания ролей
+    if (roleIds.length > 0) {
+        roleMentions = roleIds.map(id => '<@&' + id + '>').join(' ');
     }
 
-    // Добавляем статические упоминания
-    if (formConfig.mentions) {
-        const additionalMentions = formConfig.mentions.split(',')
-            .map(id => id.trim())
-            .filter(id => id.length >= 17)
-            .map(id => '<@&' + id + '>')
-            .join(' ');
-        
-        if (additionalMentions) {
-            mentionContent += additionalMentions + ' ';
-        }
+    // ИСПРАВЛЕНИЕ: Разделяем content на роли и пользователей
+    let content = '';
+    
+    // Роли идут ПЕРВЫМИ в content
+    if (roleMentions) {
+        content += roleMentions + ' ';
     }
-
-    // Добавляем упоминания пользователей
-    if (discordIds.length > 0) {
-        const userMentions = discordIds.map(id => '<@' + id + '>').join(' ');
-        mentionContent += userMentions;
+    
+    // Пользователи идут ПОСЛЕ ролей в content
+    if (userMentions) {
+        content += userMentions;
     }
 
     // Убираем лишние пробелы
-    mentionContent = mentionContent.trim();
+    content = content.trim();
 
     const embed = {
         title: formConfig.title || '📋 ' + (formData.title || formConfig.form_name),
@@ -273,20 +279,16 @@ async function sendDiscordMessage(formConfig, formData, answers) {
 
     const limitedAnswers = answers.slice(0, MAX_QUESTIONS);
 
+    // ИСПРАВЛЕНИЕ: В эмбеде показываем текст ответов, но для Discord ID полей преобразуем в упоминания
     limitedAnswers.forEach((answer, index) => {
         if (answer.text) {
-            const isDiscordIdField = discordIdFields.includes(index);
-            
             // Используем кастомное название вопроса или генерируем стандартное
             let questionText;
             
-            // Обрабатываем разные форматы questionTitles
             if (questionTitles[index]) {
                 if (typeof questionTitles[index] === 'object' && questionTitles[index].title) {
-                    // Новый формат: {index: number, title: string}
                     questionText = questionTitles[index].title;
                 } else if (typeof questionTitles[index] === 'string') {
-                    // Старый формат: массив строк
                     questionText = questionTitles[index];
                 } else {
                     questionText = 'Вопрос ' + (index + 1);
@@ -295,38 +297,32 @@ async function sendDiscordMessage(formConfig, formData, answers) {
                 questionText = 'Вопрос ' + (index + 1);
             }
             
-            if (isDiscordIdField) {
-                const discordId = answer.text.replace(/[^0-9]/g, '');
+            // ИСПРАВЛЕНИЕ: Для Discord ID полей преобразуем текст в упоминание
+            let displayText = answer.text;
+            if (discordIdFields.includes(index)) {
+                let discordId = answer.text.replace(/[^0-9]/g, '');
                 if (discordId.length >= 17) {
-                    embed.fields.push({
-                        name: questionText,
-                        value: '<@' + discordId + '>',
-                        inline: false
-                    });
-                } else {
-                    embed.fields.push({
-                        name: questionText,
-                        value: answer.text,
-                        inline: false
-                    });
+                    displayText = '<@' + discordId + '>';
                 }
-            } else {
-                const fieldValue = answer.text.length > 1024 ? 
-                    answer.text.substring(0, 1020) + '...' : answer.text;
-                
-                embed.fields.push({
-                    name: questionText,
-                    value: fieldValue,
-                    inline: false
-                });
             }
+            
+            // В эмбеде показываем текст или упоминания
+            if (displayText.length > 1024) {
+                displayText = displayText.substring(0, 1020) + '...';
+            }
+            
+            embed.fields.push({
+                name: questionText,
+                value: displayText,
+                inline: false
+            });
         }
     });
 
     if (answers.length > MAX_QUESTIONS) {
         embed.fields.push({
             name: '📝 Примечание',
-            value: 'Показаны первые ' + MAX_QUESTIONS + ' из ' + answers.length + ' вопросов. Остальные вопросы не были включены из-за ограничений Discord.',
+            value: 'Показаны первые ' + MAX_QUESTIONS + ' из ' + answers.length + ' вопросов.',
             inline: false
         });
     }
@@ -343,8 +339,9 @@ async function sendDiscordMessage(formConfig, formData, answers) {
         embeds: [embed]
     };
 
-    if (mentionContent) {
-        payload.content = mentionContent;
+    // Добавляем content ТОЛЬКО если есть упоминания
+    if (content) {
+        payload.content = content;
     }
 
     try {
@@ -797,7 +794,7 @@ const LOGIN_HTML = `<!DOCTYPE html>
 </body>
 </html>`;
 
-// HTML админки с расширенными настройками и резервным копированием
+// HTML админки с исправленными настройками
 const ADMIN_HTML = `<!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -1167,6 +1164,16 @@ const ADMIN_HTML = `<!DOCTYPE html>
             max-width: 500px;
         }
 
+        .embed-preview .content-preview {
+            background: #2f3136;
+            padding: 8px 12px;
+            border-radius: 4px;
+            margin-bottom: 8px;
+            font-family: monospace;
+            font-size: 0.9rem;
+            border-left: 3px solid #5865f2;
+        }
+
         .embed-preview .author {
             display: flex;
             align-items: center;
@@ -1276,7 +1283,7 @@ const ADMIN_HTML = `<!DOCTYPE html>
 
         .conditional-mention-header {
             display: flex;
-            justify-content: between;
+            justify-content: space-between;
             align-items: center;
             margin-bottom: 10px;
         }
@@ -1341,6 +1348,30 @@ const ADMIN_HTML = `<!DOCTYPE html>
             display: flex;
             gap: 8px;
         }
+
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.8);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .modal-content {
+            background: #36393f;
+            border-radius: 8px;
+            padding: 2rem;
+            max-width: 900px;
+            width: 95%;
+            max-height: 90vh;
+            overflow-y: auto;
+            border: 1px solid #40444b;
+        }
     </style>
 </head>
 <body>
@@ -1370,17 +1401,17 @@ const ADMIN_HTML = `<!DOCTYPE html>
                 <div>Статус сервера</div>
             </div>
             <div class="stat-card">
-                <div class="stat-number">` + MAX_QUESTIONS + `</div>
+                <div class="stat-number">${MAX_QUESTIONS}</div>
                 <div>Макс. вопросов</div>
             </div>
         </div>
 
         <div class="info-box">
-            <h4><i class="fas fa-info-circle"></i> Расширенная логика работы</h4>
-            <p><strong>Несколько Discord ID:</strong> можно указать несколько полей для упоминания разных пользователей</p>
-            <p><strong>Условные упоминания:</strong> тегить разные роли в зависимости от ответов в форме</p>
-            <p><strong>Резервное копирование:</strong> экспорт и импорт всех данных через браузер</p>
-            <p><strong>Ограничение:</strong> до ` + MAX_QUESTIONS + ` вопросов</p>
+            <h4><i class="fas fa-info-circle"></i> Исправленная логика работы</h4>
+            <p><strong>Упоминания ролей:</strong> отображаются в content сообщения (сверху)</p>
+            <p><strong>Упоминания пользователей:</strong> также в content после ролей</p>
+            <p><strong>В эмбеде:</strong> чистый текст ответов, но для Discord ID полей - упоминания</p>
+            <p><strong>Исправлены настройки:</strong> модальное окно теперь открывается корректно</p>
         </div>
 
         <div class="tab-container">
@@ -1475,7 +1506,7 @@ const ADMIN_HTML = `<!DOCTYPE html>
 
                     <div class="info-box">
                         <h4><i class="fas fa-info-circle"></i> Настройки для Яндекс Форм</h4>
-                        <p><strong>URL:</strong> http://ваш_сервер:` + PORT + `/webhook/yandex-form</p>
+                        <p><strong>URL:</strong> http://ваш_сервер:${PORT}/webhook/yandex-form</p>
                         <p><strong>Метод:</strong> POST</p>
                         <p><strong>Тип содержимого:</strong> application/json</p>
                         <p><strong>Тело запроса (JSON-RPC):</strong></p>
@@ -1500,7 +1531,7 @@ const ADMIN_HTML = `<!DOCTYPE html>
 }
                         </div>
                         <p><strong>Важно:</strong> Используйте фильтр JSON для переменной <code>answers</code></p>
-                        <p><strong>Ограничение:</strong> максимум ` + MAX_QUESTIONS + ` вопросов</p>
+                        <p><strong>Ограничение:</strong> максимум ${MAX_QUESTIONS} вопросов</p>
                     </div>
                 </div>
             </div>
@@ -1573,16 +1604,16 @@ const ADMIN_HTML = `<!DOCTYPE html>
     </div>
 
     <!-- Модальное окно настройки формы -->
-    <div id="configModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 1000; justify-content: center; align-items: center;">
-        <div class="discord-card" style="max-width: 900px; width: 95%; max-height: 90vh; overflow-y: auto;">
+    <div id="configModal" class="modal">
+        <div class="modal-content">
             <h2><i class="fas fa-sliders-h"></i> Расширенные настройки формы</h2>
             <p>Настройте как будут выглядеть сообщения из этой формы в Discord</p>
             
             <div class="info-box">
-                <h4><i class="fas fa-at"></i> Новая расширенная логика</h4>
-                <p><strong>Несколько Discord ID:</strong> можно указать несколько полей для упоминания</p>
-                <p><strong>Условные упоминания:</strong> тегить роли в зависимости от ответов</p>
-                <p><strong>Гибкие настройки:</strong> индивидуальное поведение для каждой формы</p>
+                <h4><i class="fas fa-at"></i> Исправленная логика упоминаний</h4>
+                <p><strong>Упоминания ролей:</strong> отображаются в content (сверху сообщения)</p>
+                <p><strong>Упоминания пользователей:</strong> также в content после ролей</p>
+                <p><strong>В эмбеде:</strong> чистый текст ответов, но для Discord ID полей - упоминания</p>
             </div>
             
             <div class="config-section">
@@ -1611,14 +1642,14 @@ const ADMIN_HTML = `<!DOCTYPE html>
             </div>
 
             <div class="config-section">
-                <h3><i class="fas fa-at"></i> Упоминания</h3>
+                <h3><i class="fas fa-at"></i> Упоминания ролей</h3>
                 
                 <div class="form-group">
-                    <label for="configMentions">Статические упоминания ролей (ID через запятую)</label>
+                    <label for="configMentions">ID ролей для упоминания (через запятую)</label>
                     <input type="text" id="configMentions" placeholder="123456789012345678,987654321098765432">
                     <div class="mention-example">
                         Пример: 123456789012345678,987654321098765432<br>
-                        Роли будут упомянуты: &lt;@&123456789012345678&gt; &lt;@&987654321098765432&gt;
+                        Роли будут упомянуты в content: &lt;@&123456789012345678&gt; &lt;@&987654321098765432&gt;
                     </div>
                 </div>
             </div>
@@ -1656,7 +1687,7 @@ const ADMIN_HTML = `<!DOCTYPE html>
             <div class="config-section">
                 <h3><i class="fas fa-question-circle"></i> Названия вопросов</h3>
                 <p style="margin-bottom: 1rem; font-size: 0.9rem; color: #b9bbbe;">
-                    Задайте названия для вопросов
+                    Задайте кастомные названия для вопросов вместо "Вопрос 1", "Вопрос 2" и т.д.
                 </p>
                 
                 <div id="questionTitlesContainer">
@@ -1671,6 +1702,7 @@ const ADMIN_HTML = `<!DOCTYPE html>
             <div class="config-section">
                 <h3><i class="fas fa-eye"></i> Предпросмотр</h3>
                 <div class="embed-preview">
+                    <div class="content-preview" id="previewContent">(нет упоминаний)</div>
                     <div class="author">
                         <i class="fas fa-user"></i>
                         <span>Имя вебхука</span>
@@ -1678,15 +1710,11 @@ const ADMIN_HTML = `<!DOCTYPE html>
                     <div class="title" id="previewTitle">Заголовок сообщения</div>
                     <div class="field">
                         <div class="name" id="previewQuestion1">Discord ID 1</div>
-                        <div>&lt;@123456789012345678&gt;</div>
+                        <div id="previewAnswer1">&lt;@817347897339281430&gt;</div>
                     </div>
                     <div class="field">
-                        <div class="name" id="previewQuestion2">Discord ID 2</div>
-                        <div>&lt;@987654321098765432&gt;</div>
-                    </div>
-                    <div class="field">
-                        <div class="name" id="previewQuestion3">Вопрос 3</div>
-                        <div>Ответ 3</div>
+                        <div class="name" id="previewQuestion2">Вопрос 2</div>
+                        <div id="previewAnswer2">ШНГЦУЙГН</div>
                     </div>
                     <div class="footer" id="previewFooter">GTA5RP LAMESA</div>
                 </div>
@@ -1739,6 +1767,8 @@ const ADMIN_HTML = `<!DOCTYPE html>
     </div>
 
     <script>
+        // ИСПРАВЛЕНИЕ: Определяем MAX_QUESTIONS на клиенте
+        const MAX_QUESTIONS = 20;
         let currentEditingForm = null;
 
         // Функция для переключения вкладок
@@ -2097,6 +2127,7 @@ const ADMIN_HTML = `<!DOCTYPE html>
                     
                     updatePreview();
                     
+                    // ИСПРАВЛЕНИЕ: Правильное отображение модального окна
                     document.getElementById('configModal').style.display = 'flex';
                 } else {
                     showAlert('Ошибка загрузки настроек формы', 'error');
@@ -2181,41 +2212,60 @@ const ADMIN_HTML = `<!DOCTYPE html>
             const color = document.getElementById('configColor').value;
             const questionTitles = getQuestionTitles();
             const discordIdFields = getDiscordIdFields();
+            const mentions = document.getElementById('configMentions').value;
             
             document.getElementById('previewTitle').textContent = title;
             document.getElementById('previewFooter').textContent = footer;
             document.getElementById('previewTitle').style.color = color;
             
-            // Обновляем названия вопросов в превью
-            const previewQuestions = document.querySelectorAll('.embed-preview .field');
+            // Обновляем превью content с упоминаниями
+            let previewContent = '';
             
-            // Создаем карту вопросов для быстрого доступа
+            // Превью ролей
+            if (mentions) {
+                const roleIds = mentions.split(',').map(id => id.trim()).filter(id => id.length >= 17);
+                if (roleIds.length > 0) {
+                    previewContent = roleIds.map(id => '<@&' + id + '>').join(' ') + ' ';
+                }
+            }
+            
+            // Превью пользователей из discordIdFields
+            if (discordIdFields && discordIdFields.length > 0) {
+                previewContent += discordIdFields.map(idx => '<@' + (123456789012345678 + idx) + '>').join(' ');
+            }
+            
+            // Обновляем элемент превью content
+            document.getElementById('previewContent').textContent = previewContent.trim() || '(нет упоминаний)';
+            
+            // Обновляем названия вопросов в превью
             const questionMap = {};
             questionTitles.forEach(item => {
                 questionMap[item.index] = item.title;
             });
             
             // Обновляем превью полей
-            previewQuestions.forEach((preview, index) => {
-                const nameElement = preview.querySelector('.name');
-                const valueElement = preview.querySelector('div:last-child');
+            for (let i = 0; i < 3; i++) {
+                const nameElement = document.getElementById('previewQuestion' + (i + 1));
+                const valueElement = document.getElementById('previewAnswer' + (i + 1));
                 
-                // Определяем название вопроса
-                let questionName = questionMap[index] || ('Вопрос ' + (index + 1));
-                nameElement.textContent = questionName;
-                
-                // Определяем значение для превью
-                if (discordIdFields.includes(index)) {
-                    valueElement.innerHTML = '&lt;@' + (123456789012345678 + index) + '&gt;';
-                } else {
-                    valueElement.textContent = 'Ответ на вопрос "' + questionName + '"';
+                if (nameElement && valueElement) {
+                    let questionName = questionMap[i] || ('Вопрос ' + (i + 1));
+                    nameElement.textContent = questionName;
+                    
+                    if (discordIdFields.includes(i)) {
+                        // ИСПРАВЛЕНИЕ: В эмбеде показываем упоминания для Discord ID полей
+                        valueElement.textContent = '<@' + (123456789012345678 + i) + '>';
+                    } else {
+                        valueElement.textContent = 'Ответ на вопрос "' + questionName + '"';
+                    }
                 }
-            });
+            }
         }
         
         // Добавляем обработчики событий для обновления превью
         document.getElementById('configTitle').addEventListener('input', updatePreview);
         document.getElementById('configFooter').addEventListener('input', updatePreview);
+        document.getElementById('configMentions').addEventListener('input', updatePreview);
         document.getElementById('configColor').addEventListener('input', function() {
             document.getElementById('configColorText').textContent = this.value;
             updatePreview();
@@ -2902,8 +2952,8 @@ app.post('/admin/test-webhook/:formId', requireAuth, (req, res) => {
             const testData = {
                 form: { id: formId, title: formConfig.form_name },
                 answers: [
-                    { question_id: 'q1', text: '123456789012345678' },
-                    { question_id: 'q2', text: '987654321098765432' },
+                    { question_id: 'q1', text: '817347897339281430' },
+                    { question_id: 'q2', text: 'ШНГЦУЙГН' },
                     { question_id: 'q3', text: 'Тестовый пользователь' },
                     { question_id: 'q4', text: '25 лет' },
                     { question_id: 'q5', text: 'Это тестовый пользователь для проверки системы' }
@@ -3438,8 +3488,8 @@ app.get('/health', (req, res) => {
     res.json({ 
         status: 'healthy', 
         timestamp: new Date().toISOString(),
-        version: '5.0-ADVANCED-BACKUP',
-        note: 'Расширенные настройки + Резервное копирование',
+        version: '5.0-FIXED',
+        note: 'Исправленная версия - упоминания в content, упоминания в эмбеде для Discord ID полей',
         max_questions: MAX_QUESTIONS,
         database_path: DB_FILE,
         backup_path: BACKUP_DIR
@@ -3457,14 +3507,16 @@ initializeDatabase().then(database => {
 📍 Порт: ${PORT}
 📊 Админка: http://localhost:${PORT}/admin
 🌐 Доступ извне: http://ваш_сервер:${PORT}/admin
-🔐 Логин: admin / admin123
+🔐 Логин: admin / пароль из переменной ADMIN_PASSWORD
 
-🎉 РАСШИРЕННЫЕ ВОЗМОЖНОСТИ ВЕРСИИ 5.0-ADVANCED-BACKUP:
+🎉 ИСПРАВЛЕННАЯ ВЕРСИЯ 5.0-FIXED:
+✅ УПОМИНАНИЯ В CONTENT - роли и пользователи отображаются сверху
+✅ УПОМИНАНИЯ В ЭМБЕДЕ - для Discord ID полей отображаются теги
+✅ ИСПРАВЛЕНА ОШИБКА MAX_QUESTIONS в админке
 ✅ НЕСКОЛЬКО DISCORD ID - можно указать несколько полей для упоминания
 ✅ УСЛОВНЫЕ УПОМИНАНИЯ - тегить разные роли в зависимости от ответов
 ✅ ГИБКИЕ НАСТРОЙКИ - индивидуальное поведение для каждой формы
 ✅ КАСТОМНЫЕ НАЗВАНИЯ ВОПРОСОВ
-✅ НЕ ТРЕБУЕТСЯ ПЕРЕДАЧА ВОПРОСОВ ИЗ ФОРМЫ
 ✅ ОГРАНИЧЕНИЕ: ${MAX_QUESTIONS} ВОПРОСОВ
 ✅ ФУТЕР "GTA5RP LAMESA"
 ✅ ПОДДЕРЖКА JSON-RPC POST
@@ -3481,7 +3533,7 @@ initializeDatabase().then(database => {
 
 ⚡ СЕРВЕР ГОТОВ К РАБОТЕ!
 
-💡 ВАЖНО: Смените пароль администратора в коде!
+💡 ВАЖНО: Убедитесь что установлена переменная ADMIN_PASSWORD!
         `);
     });
 }).catch(err => {
